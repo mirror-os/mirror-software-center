@@ -563,9 +563,9 @@ impl App {
                 let weight = best_weight?;
                 // Use first info as it is preferred, even if other ones had a higher weight
                 let AppEntry {
-                    backend_name,
+                    backend_name: _,
                     info,
-                    installed,
+                    installed: _,
                 } = infos.first()?;
                 Some(SearchResult {
                     backend_name: *backend_name,
@@ -1023,7 +1023,7 @@ impl App {
             async move {
                 tokio::task::spawn_blocking(move || {
                     let start = Instant::now();
-                    let results = Self::generic_search(&apps, &backends, |id, info, _installed| {
+                    let results = Self::generic_search(&apps, &backends, |_id, info, _installed| {
                         if !matches!(info.kind, AppKind::DesktopApplication) {
                             return None;
                         }
