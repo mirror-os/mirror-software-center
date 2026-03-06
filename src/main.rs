@@ -563,7 +563,7 @@ impl App {
                 let weight = best_weight?;
                 // Use first info as it is preferred, even if other ones had a higher weight
                 let AppEntry {
-                    backend_name: _,
+                    backend_name,
                     info,
                     installed: _,
                 } = infos.first()?;
