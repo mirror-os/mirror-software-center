@@ -1,5 +1,5 @@
-app-name = Mirror OS Software Center
-comment = Software Center for Mirror OS
+app-name = Software Center
+comment = Mirror OS Software Center
 keywords = App;Software;Store;Shop;
 back = Back
 cancel = Cancel
