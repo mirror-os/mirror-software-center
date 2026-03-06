@@ -1,0 +1,87 @@
+name: Build and publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: mirror-os/mirror-software-center
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libseat-dev \
+            libinput-dev \
+            libudev-dev \
+            libgbm-dev \
+            libpipewire-0.3-dev \
+            libflatpak-dev \
+            libdbus-1-dev \
+            libpango1.0-dev \
+            libcairo2-dev \
+            libssl-dev \
+            pkg-config \
+            wayland-protocols \
+            clang
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --no-default-features --features flatpak,wayland,wgpu,dbus-config,desktop-systemd-scope,logind,notify,single-instance,xdg-portal
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          # Gather desktop/icon artifacts from target/xdgen and res/
+          mkdir -p dist/usr/bin
+          mkdir -p dist/usr/share/applications
+          mkdir -p dist/usr/share/icons
+
+          cp target/release/mirror-software-center dist/usr/bin/
+          cp target/xdgen/*.desktop dist/usr/share/applications/ 2>/dev/null || true
+          cp -r res/icons/hicolor dist/usr/share/icons/ 2>/dev/null || true
+
+          # Write a minimal Dockerfile that just holds the build artifacts
+          printf 'FROM scratch\nCOPY dist/ /\n' > Dockerfile.dist
+
+          docker build -f Dockerfile.dist -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest .
+          docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
