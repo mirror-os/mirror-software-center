@@ -383,18 +383,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-fs"
-version = "1.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "279cf904654eeebfa37ac9bb1598880884924aab82e290aa65c9e77a0e142e06"
-dependencies = [
- "async-lock 2.8.0",
- "autocfg",
- "blocking",
- "futures-lite 1.13.0",
-]
-
-[[package]]
 name = "async-io"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1263,49 +1251,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cosmic-store"
-version = "1.0.8"
-dependencies = [
- "appstream",
- "atomicwrites",
- "bitcode",
- "chrono",
- "clap",
- "cosmic-panel-config",
- "dirs",
- "env_logger",
- "flate2",
- "freedesktop_entry_parser",
- "i18n-embed",
- "i18n-embed-fl",
- "icu_collator",
- "icu_locale",
- "libc",
- "libcosmic",
- "libflatpak",
- "log",
- "logind-zbus",
- "nix 0.30.1",
- "notify-rust",
- "open",
- "packagekit-zbus",
- "paste",
- "rayon",
- "regex",
- "reqwest",
- "rust-embed",
- "serde",
- "serde_yaml",
- "spdx",
- "sys-locale",
- "tokio",
- "xdg",
- "xdgen",
- "zbus 5.13.2",
- "zstd",
-]
-
-[[package]]
 name = "cosmic-text"
 version = "0.18.2"
 source = "git+https://github.com/pop-os/cosmic-text.git#f31b9d86959676d97fde54ff5907a58ab4308897"
@@ -1873,17 +1818,6 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
-]
-
-[[package]]
-name = "flathub-stats"
-version = "1.0.8"
-dependencies = [
- "bitcode",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -3911,6 +3845,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "mirror-software-center"
+version = "0.1.0"
+dependencies = [
+ "appstream",
+ "atomicwrites",
+ "bitcode",
+ "chrono",
+ "clap",
+ "cosmic-panel-config",
+ "dirs",
+ "env_logger",
+ "flate2",
+ "freedesktop_entry_parser",
+ "i18n-embed",
+ "i18n-embed-fl",
+ "icu_collator",
+ "icu_locale",
+ "libc",
+ "libcosmic",
+ "libflatpak",
+ "log",
+ "logind-zbus",
+ "nix 0.30.1",
+ "notify-rust",
+ "open",
+ "paste",
+ "rayon",
+ "regex",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "spdx",
+ "sys-locale",
+ "tokio",
+ "xdg",
+ "xdgen",
+ "zbus 5.13.2",
+ "zstd",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4516,15 +4493,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser 0.25.1",
-]
-
-[[package]]
-name = "packagekit-zbus"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9433dbe304f2280c5aba7ba4e4b0a01f915635c2d3d55137c420d687c3114fb3"
-dependencies = [
- "zbus 3.15.2",
 ]
 
 [[package]]
@@ -6337,7 +6305,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot 0.12.5",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2 0.6.2",
@@ -8226,15 +8193,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "675d170b632a6ad49804c8cf2105d7c31eddd3312555cffd4b740e08e97c25e6"
 dependencies = [
  "async-broadcast 0.5.1",
- "async-executor",
- "async-fs",
- "async-io 1.13.0",
- "async-lock 2.8.0",
  "async-process 1.8.1",
  "async-recursion",
- "async-task",
  "async-trait",
- "blocking",
  "byteorder",
  "derivative",
  "enumflags2",
