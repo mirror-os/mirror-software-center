@@ -166,6 +166,10 @@ pub struct AppInfo {
     pub screenshots: Vec<AppScreenshot>,
     pub urls: Vec<AppUrl>,
     pub monthly_downloads: u64,
+    /// Whether this app is verified on Flathub (always false for Nix packages)
+    pub is_verified: bool,
+    /// OARS content rating: "all", "moderate", or "intense"
+    pub content_rating: String,
 }
 
 impl AppInfo {

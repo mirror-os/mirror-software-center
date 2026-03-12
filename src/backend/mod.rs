@@ -1,9 +1,9 @@
 use cosmic::widget;
-use rayon::prelude::*;
 use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
     fmt,
+    path::PathBuf,
     sync::Arc,
     time::Instant,
 };
@@ -13,6 +13,9 @@ use crate::{AppId, AppInfo, AppstreamCache, GStreamerCodec, Operation};
 /// Enum representing the available backend types
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum BackendName {
+    /// Mirror OS unified catalog (SQLite DB)
+    Catalog,
+    // Kept for serialization compat with cached SearchResults that may reference these names
     FlatpakUser,
     FlatpakSystem,
     Nix,
@@ -22,6 +25,7 @@ impl BackendName {
     /// Returns the string representation of the backend name
     pub fn as_str(&self) -> &'static str {
         match self {
+            BackendName::Catalog => "catalog",
             BackendName::FlatpakUser => "flatpak-user",
             BackendName::FlatpakSystem => "flatpak-system",
             BackendName::Nix => "nix",
@@ -45,6 +49,7 @@ impl std::str::FromStr for BackendName {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "catalog" => Ok(BackendName::Catalog),
             "flatpak-user" => Ok(BackendName::FlatpakUser),
             "flatpak-system" => Ok(BackendName::FlatpakSystem),
             "nix" => Ok(BackendName::Nix),
@@ -53,11 +58,11 @@ impl std::str::FromStr for BackendName {
     }
 }
 
+pub mod catalog;
 #[cfg(feature = "flatpak")]
 mod flatpak;
-
-pub mod nix;
 pub mod hm_options;
+pub mod nix;
 
 #[derive(Clone, Debug)]
 pub struct Package {
@@ -71,6 +76,19 @@ pub struct Package {
 pub trait Backend: fmt::Debug + Send + Sync {
     fn load_caches(&mut self, refresh: bool) -> Result<(), Box<dyn Error>>;
     fn info_caches(&self) -> &[AppstreamCache];
+
+    /// Return the backend's full app info map, if it maintains one directly
+    /// (used by catalog backend instead of AppstreamCache).
+    fn catalog_infos(&self) -> Option<&HashMap<AppId, Arc<AppInfo>>> {
+        None
+    }
+
+    /// Resolve an icon handle for the given AppInfo.
+    /// Backends that manage local media caches override this.
+    fn resolve_icon(&self, _info: &AppInfo) -> Option<widget::icon::Handle> {
+        None
+    }
+
     fn installed(&self) -> Result<Vec<Package>, Box<dyn Error>>;
     fn updates(&self) -> Result<Vec<Package>, Box<dyn Error>>;
     fn file_packages(&self, path: &str) -> Result<Vec<Package>, Box<dyn Error>>;
@@ -90,52 +108,28 @@ pub trait Backend: fmt::Debug + Send + Sync {
 // BTreeMap for stable sort order
 pub type Backends = BTreeMap<BackendName, Arc<dyn Backend>>;
 
-pub fn backends(locale: &str, refresh: bool) -> Backends {
+pub fn backends(_locale: &str, refresh: bool) -> Backends {
     let mut backends = Backends::new();
 
-    #[cfg(feature = "flatpak")]
-    {
-        for (backend_name, user) in [
-            (BackendName::FlatpakUser, true),
-            (BackendName::FlatpakSystem, false),
-        ] {
-            let start = Instant::now();
-            match flatpak::Flatpak::new(user, locale) {
-                Ok(backend) => {
-                    backends.insert(backend_name, Arc::new(backend));
-                    let duration = start.elapsed();
-                    log::info!("initialized {} backend in {:?}", backend_name, duration);
-                }
-                Err(err) => {
-                    log::error!("failed to load {} backend: {}", backend_name, err);
-                }
-            }
+    let db_path = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("mirror-os/catalog.db");
+
+    let media_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("mirror-os/media");
+
+    let start = Instant::now();
+    let mut backend = catalog::CatalogBackend::new(db_path.clone(), media_dir);
+    match backend.load_caches(refresh) {
+        Ok(()) => {
+            log::info!("catalog backend loaded in {:?}", start.elapsed());
+        }
+        Err(err) => {
+            log::error!("catalog backend load failed: {} (db: {})", err, db_path.display());
         }
     }
-
-    backends.par_iter_mut().for_each(|(backend_name, backend)| {
-        let start = Instant::now();
-        match Arc::get_mut(backend).unwrap().load_caches(refresh) {
-            Ok(()) => {
-                let duration = start.elapsed();
-                log::info!("loaded {} backend caches in {:?}", backend_name, duration);
-            }
-            Err(err) => {
-                log::error!("failed to load {} backend caches: {}", backend_name, err);
-            }
-        }
-    });
-
-    //TODO: Workaround for xml-rs memory leak when loading appstream data
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        let start = Instant::now();
-        unsafe {
-            libc::malloc_trim(0);
-        }
-        let duration = start.elapsed();
-        log::info!("trimmed allocations in {:?}", duration);
-    }
+    backends.insert(BackendName::Catalog, Arc::new(backend));
 
     backends
 }

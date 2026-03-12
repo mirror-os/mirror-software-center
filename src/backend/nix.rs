@@ -12,63 +12,12 @@
 // called by the Flatpak install path.
 
 use std::{
-    collections::HashMap,
     env,
     error::Error,
     fs,
     path::PathBuf,
     process::Command,
 };
-
-/// A Nix package as returned by `nix search --json`.
-#[derive(Clone, Debug)]
-pub struct NixPackage {
-    /// Attribute path, e.g. "nixpkgs.neovim"
-    pub attr: String,
-    /// Package name
-    pub name: String,
-    /// Short description
-    pub description: String,
-    /// Package version
-    pub version: String,
-}
-
-/// Run `nix search nixpkgs <query> --json` and return matching packages.
-pub fn search(query: &str) -> Result<Vec<NixPackage>, Box<dyn Error>> {
-    let output = Command::new("nix")
-        .args(["search", "nixpkgs", query, "--json", "--extra-experimental-features", "nix-command flakes"])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "nix search failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-
-    let json: HashMap<String, serde_json::Value> =
-        serde_json::from_slice(&output.stdout)?;
-
-    let mut packages = Vec::with_capacity(json.len());
-    for (attr, val) in json {
-        let name = val["pname"]
-            .as_str()
-            .unwrap_or(&attr)
-            .to_string();
-        let description = val["description"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        let version = val["version"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        packages.push(NixPackage { attr, name, description, version });
-    }
-
-    Ok(packages)
-}
 
 /// Return the path to the user's home-manager apps/ directory.
 pub fn apps_dir() -> Result<PathBuf, Box<dyn Error>> {

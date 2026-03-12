@@ -1,0 +1,553 @@
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Mirror OS catalog backend.
+//
+// Loads app metadata from the SQLite catalog DB at
+// ~/.local/share/mirror-os/catalog.db (maintained by mirror-catalog-update).
+//
+// Responsibilities:
+//   - Expose all Flatpak + Nix app metadata via catalog_infos()
+//   - Resolve icons from the local media cache
+//     (~/.local/share/mirror-os/media/icons/)
+//   - List installed apps via `mirror-os list --json`
+//   - Install / uninstall via `mirror-os install` / `mirror-os uninstall`
+//   - Provide FTS5 search via fts_search()
+
+use cosmic::widget;
+use rusqlite::{Connection, OpenFlags, params};
+use std::{
+    collections::HashMap,
+    env,
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
+
+use crate::{
+    AppIcon, AppId, AppInfo, AppKind, AppProvide, AppRelease, AppScreenshot, AppUrl, AppstreamCache,
+    GStreamerCodec, Operation, OperationKind,
+};
+
+use super::{Backend, Package};
+
+// ── CatalogBackend ────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct CatalogBackend {
+    /// Path to the SQLite catalog DB
+    db_path: PathBuf,
+    /// Base directory for locally-cached media (~/.local/share/mirror-os/media)
+    media_dir: PathBuf,
+    /// In-memory app info map populated by load_caches()
+    pub infos: HashMap<AppId, Arc<AppInfo>>,
+}
+
+impl CatalogBackend {
+    pub fn new(db_path: PathBuf, media_dir: PathBuf) -> Self {
+        Self {
+            db_path,
+            media_dir,
+            infos: HashMap::new(),
+        }
+    }
+}
+
+// ── FTS5 search ───────────────────────────────────────────────────────────────
+
+/// Run an FTS5 search against the catalog DB.
+///
+/// Returns `(source, id)` pairs ordered by relevance (BM25 rank ascending),
+/// with monthly_downloads as secondary sort for Flatpak results.
+pub fn fts_search(
+    db_path: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    // Build FTS5 match expression: each token becomes "token"* (prefix match)
+    let fts_query: String = query
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if fts_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT f.source, f.id
+         FROM catalog_fts f
+         LEFT JOIN flatpak_apps fa ON f.source = 'flatpak' AND f.id = fa.app_id
+         WHERE catalog_fts MATCH ?1
+         ORDER BY f.rank ASC, COALESCE(fa.monthly_downloads, 0) DESC
+         LIMIT ?2",
+    )?;
+
+    let results = stmt
+        .query_map(params![fts_query, limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(results)
+}
+
+// ── AppInfo construction helpers ──────────────────────────────────────────────
+
+fn parse_json_strings(json: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(json).unwrap_or_default()
+}
+
+fn build_flatpak_info(
+    app_id: &str,
+    name: &str,
+    summary: &str,
+    description: &str,
+    version: &str,
+    developer: &str,
+    license: &str,
+    homepage: &str,
+    bugtracker_url: &str,
+    donation_url: &str,
+    categories_json: &str,
+    icon_name: &str,
+    icon_local_path: &str,
+    screenshots_json: &str,
+    content_rating: &str,
+    flatpak_ref: &str,
+    releases_json: &str,
+    verified: bool,
+    monthly_downloads: u64,
+) -> AppInfo {
+    let categories = parse_json_strings(categories_json);
+
+    let icons = {
+        let mut v: Vec<AppIcon> = Vec::new();
+        if !icon_local_path.is_empty() {
+            v.push(AppIcon::Local(icon_local_path.to_string(), Some(128), Some(128), None));
+        } else if !icon_name.is_empty() {
+            // Fall back to stock icon name (many apps register their app-id as an XDG icon)
+            v.push(AppIcon::Stock(icon_name.to_string()));
+        }
+        if v.is_empty() {
+            v.push(AppIcon::Stock("package-x-generic".to_string()));
+        }
+        v
+    };
+
+    let screenshots: Vec<AppScreenshot> = serde_json::from_str::<Vec<serde_json::Value>>(screenshots_json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|s| {
+            // Prefer locally cached path; fall back to remote URL
+            let local = s["local_path"].as_str().unwrap_or("").to_string();
+            let remote = s["url"].as_str().unwrap_or("").to_string();
+            let path = if !local.is_empty() { local } else { remote };
+            if path.is_empty() {
+                return None;
+            }
+            let caption = s["caption"].as_str().unwrap_or("").to_string();
+            Some(AppScreenshot { caption, url: path })
+        })
+        .collect();
+
+    let releases: Vec<AppRelease> = serde_json::from_str::<Vec<serde_json::Value>>(releases_json)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| AppRelease {
+            timestamp: r["timestamp"].as_i64().filter(|&t| t > 0),
+            version: r["version"].as_str().unwrap_or("").to_string(),
+            description: r["description"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+            url: None,
+        })
+        .collect();
+
+    let mut urls: Vec<AppUrl> = Vec::new();
+    if !homepage.is_empty() {
+        urls.push(AppUrl::Homepage(homepage.to_string()));
+    }
+    if !bugtracker_url.is_empty() {
+        urls.push(AppUrl::BugTracker(bugtracker_url.to_string()));
+    }
+    if !donation_url.is_empty() {
+        urls.push(AppUrl::Donation(donation_url.to_string()));
+    }
+
+    let flatpak_refs = if !flatpak_ref.is_empty() {
+        vec![flatpak_ref.to_string()]
+    } else {
+        vec![]
+    };
+
+    AppInfo {
+        source_id: "flathub".to_string(),
+        source_name: "Flathub".to_string(),
+        origin_opt: Some("flathub".to_string()),
+        name: name.to_string(),
+        summary: summary.to_string(),
+        kind: AppKind::DesktopApplication,
+        developer_name: developer.to_string(),
+        description: description.to_string(),
+        license_opt: if !license.is_empty() { Some(license.to_string()) } else { None },
+        pkgnames: vec![],
+        package_paths: vec![],
+        categories,
+        desktop_ids: vec![app_id.to_string()],
+        flatpak_refs,
+        icons,
+        provides: vec![],
+        releases,
+        screenshots,
+        urls,
+        monthly_downloads,
+        is_verified: verified,
+        content_rating: content_rating.to_string(),
+    }
+}
+
+fn build_nix_info(
+    attr: &str,
+    pname: &str,
+    version: &str,
+    description: &str,
+    long_description: &str,
+    homepage: &str,
+    license: &str,
+) -> AppInfo {
+    let urls = if !homepage.is_empty() {
+        vec![AppUrl::Homepage(homepage.to_string())]
+    } else {
+        vec![]
+    };
+
+    let summary = if description.len() <= 120 {
+        description.to_string()
+    } else {
+        format!("{}…", &description[..117])
+    };
+    let full_desc = if !long_description.is_empty() {
+        long_description.to_string()
+    } else {
+        description.to_string()
+    };
+
+    AppInfo {
+        source_id: "nixpkgs".to_string(),
+        source_name: "nixpkgs".to_string(),
+        origin_opt: None,
+        name: if !pname.is_empty() { pname.to_string() } else { attr.to_string() },
+        summary,
+        kind: AppKind::DesktopApplication,
+        developer_name: String::new(),
+        description: full_desc,
+        license_opt: if !license.is_empty() { Some(license.to_string()) } else { None },
+        pkgnames: vec![attr.to_string()],
+        package_paths: vec![],
+        categories: vec![],
+        desktop_ids: vec![],
+        flatpak_refs: vec![],
+        icons: vec![AppIcon::Stock("package-x-generic".to_string())],
+        provides: vec![],
+        releases: vec![],
+        screenshots: vec![],
+        urls,
+        monthly_downloads: 0,
+        is_verified: false,
+        content_rating: "all".to_string(),
+    }
+}
+
+// ── Backend trait implementation ──────────────────────────────────────────────
+
+impl Backend for CatalogBackend {
+    fn load_caches(&mut self, _refresh: bool) -> Result<(), Box<dyn Error>> {
+        let conn = Connection::open_with_flags(
+            &self.db_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+
+        self.infos.clear();
+
+        // ── Nix packages ──────────────────────────────────────────────────────
+        {
+            let mut stmt = conn.prepare(
+                "SELECT attr, pname, version, description, long_description, homepage, license
+                 FROM nix_packages",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            for row in rows.filter_map(|r| r.ok()) {
+                let (attr, pname, version, description, long_description, homepage, license) = row;
+                let info = build_nix_info(
+                    &attr, &pname, &version, &description, &long_description, &homepage, &license,
+                );
+                let id = AppId::new(&attr);
+                self.infos.insert(id, Arc::new(info));
+            }
+        }
+
+        // ── Flatpak apps (loaded second so they win on deduplication by slug) ─
+        // The app_map table tells us which Flatpak IDs and Nix attrs share a slug.
+        // For slugs with both sources, we load Flatpak as the primary AppInfo and
+        // store the nix_attr in pkgnames so operation() can use it.
+        let app_map: HashMap<String, (Option<String>, Option<String>)> = {
+            let mut stmt = conn.prepare(
+                "SELECT flatpak_id, nix_attr FROM app_map WHERE flatpak_id IS NOT NULL",
+            )?;
+            let mut m = HashMap::new();
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            })?;
+            for row in rows.filter_map(|r| r.ok()) {
+                if let (Some(fp_id), nix_attr) = row {
+                    m.insert(fp_id.clone(), (Some(fp_id), nix_attr));
+                }
+            }
+            m
+        };
+
+        {
+            let mut stmt = conn.prepare(
+                "SELECT app_id, name, summary, description, version, developer, license,
+                        homepage, bugtracker_url, donation_url, categories, icon_name,
+                        icon_local_path, screenshots, content_rating, flatpak_ref,
+                        releases_json, verified, monthly_downloads
+                 FROM flatpak_apps",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,   // app_id
+                    row.get::<_, String>(1)?,   // name
+                    row.get::<_, String>(2)?,   // summary
+                    row.get::<_, String>(3)?,   // description
+                    row.get::<_, String>(4)?,   // version
+                    row.get::<_, String>(5)?,   // developer
+                    row.get::<_, String>(6)?,   // license
+                    row.get::<_, String>(7)?,   // homepage
+                    row.get::<_, String>(8)?,   // bugtracker_url
+                    row.get::<_, String>(9)?,   // donation_url
+                    row.get::<_, String>(10)?,  // categories
+                    row.get::<_, String>(11)?,  // icon_name
+                    row.get::<_, String>(12)?,  // icon_local_path
+                    row.get::<_, String>(13)?,  // screenshots
+                    row.get::<_, String>(14)?,  // content_rating
+                    row.get::<_, String>(15)?,  // flatpak_ref
+                    row.get::<_, String>(16)?,  // releases_json
+                    row.get::<_, i64>(17)?,     // verified
+                    row.get::<_, i64>(18)?,     // monthly_downloads
+                ))
+            })?;
+
+            for row in rows.filter_map(|r| r.ok()) {
+                let (
+                    app_id, name, summary, description, _version, developer, license,
+                    homepage, bugtracker_url, donation_url, categories,
+                    icon_name, icon_local_path, screenshots, content_rating, flatpak_ref,
+                    releases_json, verified, monthly_downloads,
+                ) = row;
+
+                let mut info = build_flatpak_info(
+                    &app_id, &name, &summary, &description, &_version,
+                    &developer, &license, &homepage, &bugtracker_url, &donation_url,
+                    &categories, &icon_name, &icon_local_path, &screenshots,
+                    &content_rating, &flatpak_ref, &releases_json,
+                    verified != 0, monthly_downloads as u64,
+                );
+
+                // If this Flatpak app has a matching Nix attr via app_map, record it in pkgnames
+                // so install logic can prefer Nix if requested.
+                if let Some((_, Some(nix_attr))) = app_map.get(&app_id) {
+                    info.pkgnames.push(nix_attr.clone());
+                }
+
+                let id = AppId::new(&app_id);
+                self.infos.insert(id, Arc::new(info));
+            }
+        }
+
+        log::info!(
+            "catalog: loaded {} apps ({} Flatpak + Nix)",
+            self.infos.len(),
+            self.infos.values().filter(|i| i.source_id == "flathub").count()
+        );
+        Ok(())
+    }
+
+    fn info_caches(&self) -> &[AppstreamCache] {
+        // The catalog backend does not use AppstreamCache; infos are exposed
+        // directly via catalog_infos() instead.
+        &[]
+    }
+
+    fn catalog_infos(&self) -> Option<&HashMap<AppId, Arc<AppInfo>>> {
+        Some(&self.infos)
+    }
+
+    fn resolve_icon(&self, info: &AppInfo) -> Option<widget::icon::Handle> {
+        for icon in &info.icons {
+            match icon {
+                AppIcon::Local(path, _, _, _) if !path.is_empty() => {
+                    let p = Path::new(path);
+                    if p.is_file() {
+                        return Some(widget::icon::from_path(p.to_path_buf()));
+                    }
+                }
+                AppIcon::Stock(name) if name != "package-x-generic" => {
+                    return Some(
+                        widget::icon::from_name(name.as_str())
+                            .size(128)
+                            .handle(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        // Final fallback: generic package icon
+        Some(
+            widget::icon::from_name("package-x-generic")
+                .size(128)
+                .handle(),
+        )
+    }
+
+    fn installed(&self) -> Result<Vec<Package>, Box<dyn Error>> {
+        let output = Command::new("mirror-os")
+            .args(["list", "--json"])
+            .output()
+            .map_err(|e| format!("mirror-os list failed: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("mirror-os list failed: {}", stderr).into());
+        }
+
+        let items: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+            .unwrap_or_default();
+
+        let mut packages = Vec::new();
+        for item in items {
+            let source_id = item["source_id"].as_str().unwrap_or("");
+            let display_name = item["display_name"].as_str().unwrap_or("");
+            let version = item["version"].as_str().unwrap_or("").to_string();
+
+            // Look up rich AppInfo if available
+            let id = AppId::new(source_id);
+            let info = if let Some(cached) = self.infos.get(&id) {
+                cached.clone()
+            } else {
+                // Build a minimal AppInfo from the list item
+                Arc::new(AppInfo {
+                    source_id: source_id.to_string(),
+                    source_name: item["source"].as_str().unwrap_or("").to_string(),
+                    name: display_name.to_string(),
+                    summary: String::new(),
+                    icons: vec![AppIcon::Stock("package-x-generic".to_string())],
+                    ..AppInfo::default()
+                })
+            };
+
+            let icon = self.resolve_icon(&info).unwrap_or_else(|| {
+                widget::icon::from_name("package-x-generic").size(128).handle()
+            });
+
+            packages.push(Package {
+                id,
+                icon,
+                info,
+                version,
+                extra: HashMap::new(),
+            });
+        }
+
+        Ok(packages)
+    }
+
+    fn updates(&self) -> Result<Vec<Package>, Box<dyn Error>> {
+        // Updates are OS-level (bootc upgrade), not per-app
+        Ok(Vec::new())
+    }
+
+    fn file_packages(&self, _path: &str) -> Result<Vec<Package>, Box<dyn Error>> {
+        Ok(Vec::new())
+    }
+
+    fn operation(
+        &self,
+        op: &Operation,
+        mut f: Box<dyn FnMut(f32) + 'static>,
+    ) -> Result<(), Box<dyn Error>> {
+        let Some(app_id) = op.package_ids.first() else {
+            return Err("operation: no app_id provided".into());
+        };
+        let Some(info) = op.infos.first() else {
+            return Err("operation: no AppInfo provided".into());
+        };
+
+        // Determine source flag: prefer Flatpak for apps that have a flatpak_ref
+        let source_flag = if info.source_id == "nixpkgs" {
+            "--nix"
+        } else {
+            "--flatpak"
+        };
+
+        f(0.0);
+
+        match &op.kind {
+            OperationKind::Install => {
+                let raw_id = app_id.raw();
+                log::info!("catalog: installing {} ({})", raw_id, source_flag);
+                let status = Command::new("mirror-os")
+                    .args(["install", raw_id, source_flag])
+                    .status()
+                    .map_err(|e| format!("mirror-os install: {}", e))?;
+                if !status.success() {
+                    return Err(format!("mirror-os install {} failed", raw_id).into());
+                }
+            }
+            OperationKind::Uninstall { .. } => {
+                let raw_id = app_id.raw();
+                log::info!("catalog: uninstalling {}", raw_id);
+                let status = Command::new("mirror-os")
+                    .args(["uninstall", raw_id])
+                    .status()
+                    .map_err(|e| format!("mirror-os uninstall: {}", e))?;
+                if !status.success() {
+                    return Err(format!("mirror-os uninstall {} failed", raw_id).into());
+                }
+            }
+            _ => {
+                log::warn!("catalog: unsupported operation kind {:?}", op.kind);
+            }
+        }
+
+        f(100.0);
+        Ok(())
+    }
+}
+
+impl fmt::Display for CatalogBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CatalogBackend({})", self.db_path.display())
+    }
+}

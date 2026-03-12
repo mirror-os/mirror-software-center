@@ -28,6 +28,7 @@ use crate::nav::NavPage;
 use crate::operation::{Operation, OperationKind, RepositoryAdd};
 use crate::search::{apply_icons_to_results, preserve_icons_from};
 use crate::{App, DialogPage, GStreamerExitCode, Message, Mode};
+use crate::search_filter::SearchFilter;
 
 impl App {
     pub fn handle_update(&mut self, message: Message) -> Task<Message> {
@@ -524,6 +525,12 @@ impl App {
                 self.search_input.clear();
                 if self.search_results.take().is_some() {
                     return self.update_scroll();
+                }
+            }
+            Message::SearchFilterChanged(filter) => {
+                self.search_filter = filter;
+                if !self.search_input.is_empty() {
+                    return self.search();
                 }
             }
             Message::SearchInput(input) => {

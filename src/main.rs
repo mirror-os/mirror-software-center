@@ -40,11 +40,15 @@ mod app_id;
 use app_info::{AppIcon, AppInfo, AppKind, AppProvide, AppUrl};
 mod app_info;
 
+use search_filter::SearchFilter;
+mod search_filter;
+
 use appstream_cache::AppstreamCache;
 mod appstream_cache;
 
 use backend::{BackendName, Backends, Package};
 mod backend;
+use backend::catalog;
 
 use config::{AppTheme, CONFIG_VERSION, Config};
 mod config;
@@ -315,6 +319,7 @@ pub enum Message {
     ScrollView(scrollable::Viewport),
     SearchActivate,
     SearchClear,
+    SearchFilterChanged(SearchFilter),
     SearchInput(String),
     SearchResults(String, Vec<SearchResult>, bool),
     SearchIconsLoaded(String, Vec<(usize, widget::icon::Handle)>),
@@ -431,6 +436,7 @@ pub struct App {
     pub scrollable_id: widget::Id,
     pub scroll_views: HashMap<ScrollContext, scrollable::Viewport>,
     pub search_active: bool,
+    pub search_filter: SearchFilter,
     pub search_id: widget::Id,
     pub search_input: String,
     pub size: Cell<Option<Size>>,
@@ -595,13 +601,14 @@ impl App {
                 continue;
             };
             let appstream_caches = backend.info_caches();
-            let Some(appstream_cache) = appstream_caches
+            if let Some(appstream_cache) = appstream_caches
                 .iter()
                 .find(|x| x.source_id == result.info.source_id)
-            else {
-                continue;
-            };
-            result.icon_opt = Some(appstream_cache.icon(&result.info));
+            {
+                result.icon_opt = Some(appstream_cache.icon(&result.info));
+            } else if let Some(handle) = backend.resolve_icon(&result.info) {
+                result.icon_opt = Some(handle);
+            }
         }
         results
     }
@@ -665,13 +672,14 @@ impl App {
                 continue;
             };
             let appstream_caches = backend.info_caches();
-            let Some(appstream_cache) = appstream_caches
+            if let Some(appstream_cache) = appstream_caches
                 .iter()
                 .find(|x| x.source_id == result.info.source_id)
-            else {
-                continue;
-            };
-            result.icon_opt = Some(appstream_cache.icon(&result.info));
+            {
+                result.icon_opt = Some(appstream_cache.icon(&result.info));
+            } else if let Some(handle) = backend.resolve_icon(&result.info) {
+                result.icon_opt = Some(handle);
+            }
         }
         results
     }
@@ -928,14 +936,21 @@ impl App {
             let Some(backend) = backends.get(&result.backend_name) else {
                 continue;
             };
+
+            // Path 1: AppstreamCache-based icon resolution
             let appstream_caches = backend.info_caches();
-            let Some(appstream_cache) = appstream_caches
+            if let Some(appstream_cache) = appstream_caches
                 .iter()
                 .find(|x| x.source_id == result.info.source_id)
-            else {
+            {
+                icons.push((i, appstream_cache.icon(&result.info)));
                 continue;
-            };
-            icons.push((i, appstream_cache.icon(&result.info)));
+            }
+
+            // Path 2: Backend-provided icon resolution (catalog backend with local media cache)
+            if let Some(handle) = backend.resolve_icon(&result.info) {
+                icons.push((i, handle));
+            }
         }
         log::debug!(
             "icon loading: loaded {} icons in {:?} (background)",
@@ -1006,6 +1021,71 @@ impl App {
             return self.handle_gstreamer_codec(input.clone(), gstreamer_codec);
         }
 
+        // Try FTS5 search via the catalog backend first (fast, SQLite-backed)
+        let db_path_opt: Option<std::path::PathBuf> = dirs::data_local_dir()
+            .map(|d| d.join("mirror-os/catalog.db"));
+
+        let apps = self.apps.clone();
+        let backends = self.backends.clone();
+        let filter = self.search_filter.clone();
+
+        if let Some(db_path) = db_path_opt.filter(|p| p.is_file()) {
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let start = Instant::now();
+                        let fts_ids = match backend::catalog::fts_search(&db_path, &input, MAX_RESULTS * 4) {
+                            Ok(ids) => ids,
+                            Err(err) => {
+                                log::warn!("FTS search failed, falling back to regex: {}", err);
+                                return action::app(Message::SearchResults(input, Vec::new(), false));
+                            }
+                        };
+
+                        let results: Vec<SearchResult> = fts_ids
+                            .into_iter()
+                            .filter_map(|(_source, id)| {
+                                let app_id = AppId::new(&id);
+                                let entries = apps.get(&app_id)?;
+                                let entry = entries.first()?;
+                                if !matches!(entry.info.kind, AppKind::DesktopApplication) {
+                                    return None;
+                                }
+                                if !filter.matches(&entry.info, entry.installed) {
+                                    return None;
+                                }
+                                // Resolve icon inline for top results
+                                let icon_opt = backends
+                                    .get(&entry.backend_name)
+                                    .and_then(|b| b.resolve_icon(&entry.info));
+                                Some(SearchResult {
+                                    backend_name: entry.backend_name,
+                                    id: app_id,
+                                    icon_opt,
+                                    info: entry.info.clone(),
+                                    weight: 0,
+                                })
+                            })
+                            .take(MAX_RESULTS)
+                            .collect();
+
+                        let duration = start.elapsed();
+                        log::info!(
+                            "FTS searched for {:?} in {:?}, found {} results",
+                            input,
+                            duration,
+                            results.len()
+                        );
+                        action::app(Message::SearchResults(input, results, false))
+                    })
+                    .await
+                    .unwrap_or(action::none())
+                },
+                |x| x,
+            );
+        }
+
+        // Fallback: regex search over in-memory apps map
         let pattern = regex::escape(&input);
         let regex = match regex::RegexBuilder::new(&pattern)
             .case_insensitive(true)
@@ -1017,35 +1097,29 @@ impl App {
                 return Task::none();
             }
         };
-        let apps = self.apps.clone();
-        let backends = self.backends.clone();
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
                     let start = Instant::now();
-                    let results = Self::generic_search(&apps, &backends, |_id, info, _installed| {
+                    let results = Self::generic_search(&apps, &backends, |_id, info, installed| {
                         if !matches!(info.kind, AppKind::DesktopApplication) {
                             return None;
                         }
-                        //TODO: improve performance
+                        if !filter.matches(info, installed) {
+                            return None;
+                        }
                         let stats_weight = |weight: i64| -> i64 {
-                            //TODO: make sure no overflows
                             (weight << 56) - (info.monthly_downloads as i64)
                         };
-
-                        //TODO: fuzzy match (nucleus-matcher?)
                         let regex_weight = |string: &str, weight: i64| -> Option<i64> {
                             let mat = regex.find(string)?;
                             if mat.range().start == 0 {
                                 if mat.range().end == string.len() {
-                                    // String equals search phrase
                                     Some(stats_weight(weight + 0))
                                 } else {
-                                    // String starts with search phrase
                                     Some(stats_weight(weight + 1))
                                 }
                             } else {
-                                // String contains search phrase
                                 Some(stats_weight(weight + 2))
                             }
                         };
@@ -1242,7 +1316,8 @@ impl App {
                     let all_entries: Vec<(AppId, AppEntry)> = backends
                         .par_iter()
                         .flat_map(|(backend_name, backend)| {
-                            backend
+                            // Path 1: AppstreamCache-based backends (legacy)
+                            let from_caches: Vec<(AppId, AppEntry)> = backend
                                 .info_caches()
                                 .iter()
                                 .flat_map(|appstream_cache| {
@@ -1262,6 +1337,36 @@ impl App {
                                         )
                                     })
                                 })
+                                .collect();
+
+                            // Path 2: Catalog backend exposes infos directly
+                            let from_catalog: Vec<(AppId, AppEntry)> =
+                                if let Some(infos) = backend.catalog_infos() {
+                                    infos
+                                        .iter()
+                                        .map(|(id, info)| {
+                                            (
+                                                id.clone(),
+                                                AppEntry {
+                                                    backend_name: *backend_name,
+                                                    info: info.clone(),
+                                                    installed: Self::is_installed_inner(
+                                                        installed_ref,
+                                                        *backend_name,
+                                                        id,
+                                                        info,
+                                                    ),
+                                                },
+                                            )
+                                        })
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                };
+
+                            from_caches
+                                .into_iter()
+                                .chain(from_catalog)
                                 .collect::<Vec<_>>()
                         })
                         .collect();
@@ -2076,6 +2181,7 @@ impl Application for App {
             selected_opt: None,
             applet_placement_buttons,
             uninstall_purge_data: false,
+            search_filter: SearchFilter::default(),
         };
 
         // Load cached explore results for instant display
@@ -2782,29 +2888,56 @@ impl Application for App {
                 subscriptions.push(Subscription::run_with_id(
                     url.clone(),
                     stream::channel(16, move |mut msg_tx| async move {
-                        log::info!("fetch screenshot {}", url);
-                        match reqwest::get(&url).await {
-                            Ok(response) => match response.bytes().await {
+                        // Local file path (catalog backend stores absolute paths in url field)
+                        if url.starts_with('/') {
+                            match std::fs::read(&url) {
                                 Ok(bytes) => {
                                     log::info!(
-                                        "fetched screenshot from {}: {} bytes",
+                                        "loaded screenshot from {}: {} bytes",
                                         url,
                                         bytes.len()
                                     );
                                     let _ = msg_tx
-                                        .send(Message::SelectedScreenshot(
-                                            screenshot_i,
-                                            url,
-                                            bytes.to_vec(),
-                                        ))
+                                        .send(Message::SelectedScreenshot(screenshot_i, url, bytes))
                                         .await;
                                 }
                                 Err(err) => {
                                     log::warn!("failed to read screenshot from {}: {}", url, err);
                                 }
-                            },
-                            Err(err) => {
-                                log::warn!("failed to request screenshot from {}: {}", url, err);
+                            }
+                        } else {
+                            log::info!("fetch screenshot {}", url);
+                            match reqwest::get(&url).await {
+                                Ok(response) => match response.bytes().await {
+                                    Ok(bytes) => {
+                                        log::info!(
+                                            "fetched screenshot from {}: {} bytes",
+                                            url,
+                                            bytes.len()
+                                        );
+                                        let _ = msg_tx
+                                            .send(Message::SelectedScreenshot(
+                                                screenshot_i,
+                                                url,
+                                                bytes.to_vec(),
+                                            ))
+                                            .await;
+                                    }
+                                    Err(err) => {
+                                        log::warn!(
+                                            "failed to read screenshot from {}: {}",
+                                            url,
+                                            err
+                                        );
+                                    }
+                                },
+                                Err(err) => {
+                                    log::warn!(
+                                        "failed to request screenshot from {}: {}",
+                                        url,
+                                        err
+                                    );
+                                }
                             }
                         }
                         pending().await

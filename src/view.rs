@@ -22,6 +22,7 @@ use crate::localize::LANGUAGE_SORTER;
 use crate::nav::NavPage;
 use crate::operation::OperationKind;
 use crate::search::{GridMetrics, SearchResult};
+use crate::search_filter;
 use crate::{
     App, AppEntry, ContextPage, DialogPage, ICON_SIZE_DETAILS, ICON_SIZE_PACKAGE, MAX_RESULTS,
     Message, SelectedSource, SourceKind,
@@ -642,10 +643,12 @@ impl App {
                     //TODO: paging or dynamic load
                     let results_len = cmp::min(results.len(), MAX_RESULTS);
 
-                    let mut column = widget::column::with_capacity(2)
+                    let mut column = widget::column::with_capacity(3)
                         .padding([0, space_s, space_m, space_s])
                         .spacing(space_xxs)
                         .width(Length::Fill);
+                    // Filter chips row
+                    column = column.push(search_filter::filter_panel(&self.search_filter));
                     //TODO: back button?
                     if results.is_empty() {
                         column = column.push(widget::text::body(fl!(
