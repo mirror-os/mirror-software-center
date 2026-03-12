@@ -19,8 +19,9 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::Arc,
 };
 
@@ -560,41 +561,87 @@ impl Backend for CatalogBackend {
             return Err("operation: no AppInfo provided".into());
         };
 
-        // Determine source flag: prefer Flatpak for apps that have a flatpak_ref
-        let source_flag = if info.source_id == "nixpkgs" {
-            "--nix"
-        } else {
-            "--flatpak"
-        };
+        let source_flag = if info.source_id == "nixpkgs" { "--nix" } else { "--flatpak" };
+        let raw_id = app_id.raw().to_string();
 
-        f(0.0);
+        let mut cmd = Command::new("mirror-os");
+        // Ask trigger_switch to tee HM output to stdout so we can track progress
+        cmd.env("MIRROR_OS_STREAM", "1");
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::null());
 
         match &op.kind {
             OperationKind::Install => {
-                let raw_id = app_id.raw();
                 log::info!("catalog: installing {} ({})", raw_id, source_flag);
-                let status = Command::new("mirror-os")
-                    .args(["install", raw_id, source_flag, "--yes"])
-                    .status()
-                    .map_err(|e| format!("mirror-os install: {}", e))?;
-                if !status.success() {
-                    return Err(format!("mirror-os install {} failed", raw_id).into());
-                }
+                cmd.args(["install", &raw_id, source_flag, "--yes"]);
             }
             OperationKind::Uninstall { .. } => {
-                let raw_id = app_id.raw();
                 log::info!("catalog: uninstalling {}", raw_id);
-                let status = Command::new("mirror-os")
-                    .args(["uninstall", raw_id, "--yes"])
-                    .status()
-                    .map_err(|e| format!("mirror-os uninstall: {}", e))?;
-                if !status.success() {
-                    return Err(format!("mirror-os uninstall {} failed", raw_id).into());
-                }
+                cmd.args(["uninstall", &raw_id, "--yes"]);
             }
             _ => {
                 log::warn!("catalog: unsupported operation kind {:?}", op.kind);
+                f(100.0);
+                return Ok(());
             }
+        }
+
+        f(0.0);
+
+        let mut child = cmd.spawn().map_err(|e| format!("mirror-os spawn: {}", e))?;
+        let stdout = child.stdout.take().ok_or("failed to capture stdout")?;
+        let reader = BufReader::new(stdout);
+
+        // Map known home-manager log lines to monotonically increasing progress values.
+        // Each phase gate only advances progress; it never goes backwards.
+        let mut progress: f32 = 0.0;
+        let mut in_build_phase = false;
+
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            log::debug!("mirror-os: {}", line);
+
+            let candidate: Option<f32> = if line.contains("will be built:") || line.contains("these derivations will be built") {
+                in_build_phase = true;
+                Some(5.0)
+            } else if line.contains("building '") || line.contains("building \"") {
+                in_build_phase = true;
+                // Asymptotically advance toward 65% (each build step covers 15% of remaining gap)
+                Some((progress + (65.0 - progress) * 0.15).min(65.0))
+            } else if line.contains("copying path") || line.contains("copying '") {
+                if !in_build_phase {
+                    in_build_phase = true;
+                }
+                Some(75.0_f32.max(progress))
+            } else if line.contains("activating configuration") {
+                Some(85.0_f32.max(progress))
+            } else if line.starts_with("Activating ") {
+                Some(90.0_f32.max(progress))
+            } else if line.trim() == "Done." {
+                Some(97.0)
+            } else {
+                None
+            };
+
+            if let Some(p) = candidate {
+                if p > progress {
+                    progress = p;
+                    f(progress);
+                }
+            }
+        }
+
+        let status = child.wait().map_err(|e| format!("mirror-os wait: {}", e))?;
+        if !status.success() {
+            let op_name = match &op.kind {
+                OperationKind::Install => "install",
+                OperationKind::Uninstall { .. } => "uninstall",
+                _ => "operation",
+            };
+            return Err(format!("mirror-os {} {} failed", op_name, raw_id).into());
         }
 
         f(100.0);
