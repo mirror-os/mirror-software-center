@@ -68,7 +68,7 @@ pub struct CachedExploreResults {
 
 impl CachedExploreResults {
     fn cache_path() -> Option<std::path::PathBuf> {
-        dirs::cache_dir().map(|p| p.join("cosmic-store").join("explore_cache.bin.zst"))
+        dirs::cache_dir().map(|p| p.join("cosmic-store").join("explore_cache_v2.bin.zst"))
     }
 
     pub fn load() -> Option<Self> {

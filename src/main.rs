@@ -1420,11 +1420,18 @@ impl App {
                     }
 
                     let duration = start.elapsed();
-                    log::info!(
-                        "update_apps: built app cache with {} ids in {:?}",
-                        apps.len(),
-                        duration
-                    );
+                    if apps.is_empty() {
+                        log::warn!(
+                            "update_apps: app cache is EMPTY after {:?} — catalog DB may not be populated",
+                            duration
+                        );
+                    } else {
+                        log::info!(
+                            "update_apps: built app cache with {} ids in {:?}",
+                            apps.len(),
+                            duration
+                        );
+                    }
 
                     action::app(Message::AppsUpdated(
                         Arc::new(apps),

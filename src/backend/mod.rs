@@ -119,6 +119,13 @@ pub fn backends(_locale: &str, refresh: bool) -> Backends {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("mirror-os/media");
 
+    if !db_path.is_file() {
+        log::warn!(
+            "catalog DB not found at {} — run 'mirror-os catalog update' to populate it",
+            db_path.display()
+        );
+    }
+
     let start = Instant::now();
     let mut backend = catalog::CatalogBackend::new(db_path.clone(), media_dir);
     match backend.load_caches(refresh) {

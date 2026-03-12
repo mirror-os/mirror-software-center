@@ -387,11 +387,21 @@ impl Backend for CatalogBackend {
             }
         }
 
-        log::info!(
-            "catalog: loaded {} apps ({} Flatpak + Nix)",
-            self.infos.len(),
-            self.infos.values().filter(|i| i.source_id == "flathub").count()
-        );
+        let flatpak_count = self.infos.values().filter(|i| i.source_id == "flathub").count();
+        let nix_count = self.infos.len() - flatpak_count;
+        if self.infos.is_empty() {
+            log::warn!(
+                "catalog: loaded 0 apps from {} — catalog DB may be empty or need update",
+                self.db_path.display()
+            );
+        } else {
+            log::info!(
+                "catalog: loaded {} apps ({} Flatpak, {} Nix)",
+                self.infos.len(),
+                flatpak_count,
+                nix_count
+            );
+        }
         Ok(())
     }
 
