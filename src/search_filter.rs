@@ -111,7 +111,7 @@ pub fn filter_panel<'a>(filter: &'a SearchFilter) -> Element<'a, Message> {
         let flatpak_active = filter.source == Some(FilterSource::Flatpak);
         let nix_active = filter.source == Some(FilterSource::Nix);
 
-        let all_btn = if all_active {
+        let all_btn: Element<'_, Message> = if all_active {
             widget::button::suggested("All").into()
         } else {
             widget::button::standard("All")
@@ -122,7 +122,7 @@ pub fn filter_panel<'a>(filter: &'a SearchFilter) -> Element<'a, Message> {
                 .into()
         };
 
-        let flatpak_btn = if flatpak_active {
+        let flatpak_btn: Element<'_, Message> = if flatpak_active {
             widget::button::suggested("Flatpak").into()
         } else {
             widget::button::standard("Flatpak")
@@ -133,7 +133,7 @@ pub fn filter_panel<'a>(filter: &'a SearchFilter) -> Element<'a, Message> {
                 .into()
         };
 
-        let nix_btn = if nix_active {
+        let nix_btn: Element<'_, Message> = if nix_active {
             widget::button::suggested("Nix").into()
         } else {
             widget::button::standard("Nix")
@@ -159,7 +159,7 @@ pub fn filter_panel<'a>(filter: &'a SearchFilter) -> Element<'a, Message> {
         } else {
             "Verified"
         };
-        let btn = if filter.verified_only {
+        let btn: Element<'_, Message> = if filter.verified_only {
             widget::button::suggested(label).into()
         } else {
             widget::button::standard(label)

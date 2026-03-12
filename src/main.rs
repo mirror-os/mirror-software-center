@@ -48,7 +48,6 @@ mod appstream_cache;
 
 use backend::{BackendName, Backends, Package};
 mod backend;
-use backend::catalog;
 
 use config::{AppTheme, CONFIG_VERSION, Config};
 mod config;

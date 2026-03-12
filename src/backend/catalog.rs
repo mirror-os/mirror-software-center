@@ -17,7 +17,6 @@ use cosmic::widget;
 use rusqlite::{Connection, OpenFlags, params};
 use std::{
     collections::HashMap,
-    env,
     error::Error,
     fmt,
     path::{Path, PathBuf},
@@ -26,8 +25,10 @@ use std::{
 };
 
 use crate::{
-    AppIcon, AppId, AppInfo, AppKind, AppProvide, AppRelease, AppScreenshot, AppUrl, AppstreamCache,
-    GStreamerCodec, Operation, OperationKind,
+    appstream_cache::AppstreamCache,
+    operation::{Operation, OperationKind},
+    app_id::AppId,
+    app_info::{AppIcon, AppInfo, AppKind, AppRelease, AppScreenshot, AppUrl},
 };
 
 use super::{Backend, Package};

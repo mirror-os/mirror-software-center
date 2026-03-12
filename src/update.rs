@@ -28,7 +28,6 @@ use crate::nav::NavPage;
 use crate::operation::{Operation, OperationKind, RepositoryAdd};
 use crate::search::{apply_icons_to_results, preserve_icons_from};
 use crate::{App, DialogPage, GStreamerExitCode, Message, Mode};
-use crate::search_filter::SearchFilter;
 
 impl App {
     pub fn handle_update(&mut self, message: Message) -> Task<Message> {
