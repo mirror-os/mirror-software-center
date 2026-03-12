@@ -456,54 +456,86 @@ impl Backend for CatalogBackend {
     }
 
     fn installed(&self) -> Result<Vec<Package>, Box<dyn Error>> {
-        let output = Command::new("mirror-os")
-            .args(["list", "--json"])
-            .output()
-            .map_err(|e| format!("mirror-os list failed: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("mirror-os list failed: {}", stderr).into());
-        }
-
-        let items: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
-            .unwrap_or_default();
-
+        // Collect all installed app IDs from two sources:
+        //   1. mirror-os list --json  (HM-managed apps: user-scope Flatpak + Nix)
+        //   2. flatpak list --system  (system-scope Flatpaks from managed-apps.list)
+        // Using a set prevents duplicates when an app is in both.
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut packages = Vec::new();
-        for item in items {
-            let source_id = item["source_id"].as_str().unwrap_or("");
-            let display_name = item["display_name"].as_str().unwrap_or("");
-            let version = item["version"].as_str().unwrap_or("").to_string();
 
-            // Look up rich AppInfo if available
-            let id = AppId::new(source_id);
-            let info = if let Some(cached) = self.infos.get(&id) {
-                cached.clone()
-            } else {
-                // Build a minimal AppInfo from the list item
-                Arc::new(AppInfo {
-                    source_id: source_id.to_string(),
-                    source_name: item["source"].as_str().unwrap_or("").to_string(),
-                    name: display_name.to_string(),
-                    summary: String::new(),
-                    icons: vec![AppIcon::Stock("package-x-generic".to_string())],
-                    ..AppInfo::default()
-                })
-            };
-
-            let icon = self.resolve_icon(&info).unwrap_or_else(|| {
-                widget::icon::from_name("package-x-generic").size(128).handle()
-            });
-
-            packages.push(Package {
-                id,
-                icon,
-                info,
-                version,
-                extra: HashMap::new(),
-            });
+        // ── Source 1: mirror-os list --json ───────────────────────────────────
+        if let Ok(output) = Command::new("mirror-os").args(["list", "--json"]).output() {
+            if output.status.success() {
+                let items: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+                    .unwrap_or_default();
+                for item in items {
+                    let source_id = item["source_id"].as_str().unwrap_or("").to_string();
+                    if source_id.is_empty() || seen_ids.contains(&source_id) {
+                        continue;
+                    }
+                    seen_ids.insert(source_id.clone());
+                    let display_name = item["display_name"].as_str().unwrap_or("").to_string();
+                    let version = item["version"].as_str().unwrap_or("").to_string();
+                    let id = AppId::new(&source_id);
+                    let info = if let Some(cached) = self.infos.get(&id) {
+                        cached.clone()
+                    } else {
+                        Arc::new(AppInfo {
+                            source_id: source_id.clone(),
+                            source_name: item["source"].as_str().unwrap_or("").to_string(),
+                            name: display_name,
+                            icons: vec![AppIcon::Stock("package-x-generic".to_string())],
+                            ..AppInfo::default()
+                        })
+                    };
+                    let icon = self.resolve_icon(&info).unwrap_or_else(|| {
+                        widget::icon::from_name("package-x-generic").size(128).handle()
+                    });
+                    packages.push(Package { id, icon, info, version, extra: HashMap::new() });
+                }
+            }
         }
 
+        // ── Source 2: system-scope Flatpaks ───────────────────────────────────
+        // These are managed-apps.list entries installed by mirror-flatpak-install.
+        if let Ok(output) = Command::new("flatpak")
+            .args(["list", "--system", "--app", "--columns=application"])
+            .output()
+        {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    let app_id = line.trim();
+                    if app_id.is_empty() || seen_ids.contains(app_id) {
+                        continue;
+                    }
+                    seen_ids.insert(app_id.to_string());
+                    let id = AppId::new(app_id);
+                    let info = if let Some(cached) = self.infos.get(&id) {
+                        cached.clone()
+                    } else {
+                        Arc::new(AppInfo {
+                            source_id: app_id.to_string(),
+                            source_name: "flathub".to_string(),
+                            icons: vec![AppIcon::Stock("package-x-generic".to_string())],
+                            ..AppInfo::default()
+                        })
+                    };
+                    let icon = self.resolve_icon(&info).unwrap_or_else(|| {
+                        widget::icon::from_name("package-x-generic").size(128).handle()
+                    });
+                    packages.push(Package {
+                        id,
+                        icon,
+                        info,
+                        version: String::new(),
+                        extra: HashMap::new(),
+                    });
+                }
+            }
+        }
+
+        log::info!("catalog: {} installed apps detected", packages.len());
         Ok(packages)
     }
 
@@ -542,7 +574,7 @@ impl Backend for CatalogBackend {
                 let raw_id = app_id.raw();
                 log::info!("catalog: installing {} ({})", raw_id, source_flag);
                 let status = Command::new("mirror-os")
-                    .args(["install", raw_id, source_flag])
+                    .args(["install", raw_id, source_flag, "--yes"])
                     .status()
                     .map_err(|e| format!("mirror-os install: {}", e))?;
                 if !status.success() {
@@ -553,7 +585,7 @@ impl Backend for CatalogBackend {
                 let raw_id = app_id.raw();
                 log::info!("catalog: uninstalling {}", raw_id);
                 let status = Command::new("mirror-os")
-                    .args(["uninstall", raw_id])
+                    .args(["uninstall", raw_id, "--yes"])
                     .status()
                     .map_err(|e| format!("mirror-os uninstall: {}", e))?;
                 if !status.success() {
