@@ -1,5 +1,5 @@
-app-name = Sklep COSMIC
-comment = Sklep z aplikacjami pulpitu COSMIC
+app-name = Mirror OS Centrum oprogramowania
+comment = Centrum oprogramowania dla Mirror OS
 keywords = Aplikacje;Soft;Oprogramowanie;Sklep;
 back = Powrót
 cancel = Anuluj
@@ -56,7 +56,7 @@ uninstall-app = Odinstalować { $name }?
 uninstall-app-warning = Odinstalowanie { $name } usunie dane programu.
 # Nav Pages
 explore = Odkrywaj
-create = Utwórz
+create = Twórcze
 work = Praca
 develop = Programistyczne
 learn = Nauka

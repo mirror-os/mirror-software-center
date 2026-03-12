@@ -1,4 +1,4 @@
-app-name = COSMIC 應用程式商店
+app-name = Mirror OS 軟體中心
 back = 返回
 cancel = 取消
 check-for-updates = 檢查更新

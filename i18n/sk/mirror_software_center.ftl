@@ -1,5 +1,5 @@
-app-name = Obchod COSMIC
-comment = Obchod s aplikáciami pre pracovné prostredie COSMIC
+app-name = Mirror OS Softvérové centrum
+comment = Softvérové centrum pre Mirror OS
 keywords = Aplikácie;Softvér;Obchod;Shop;Programy;
 back = Späť
 cancel = Zrušiť

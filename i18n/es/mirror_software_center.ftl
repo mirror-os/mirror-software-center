@@ -1,5 +1,5 @@
-app-name = Tienda COSMIC
-comment = Tienda de aplicaciones para el escritorio COSMIC
+app-name = Mirror OS Centro de software
+comment = Centro de software para Mirror OS
 keywords = Aplicaciones;Software;Tienda;Store;
 back = Atrás
 cancel = Cancelar

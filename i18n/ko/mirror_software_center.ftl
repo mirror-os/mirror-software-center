@@ -1,4 +1,4 @@
-app-name = COSMIC 스토어
+app-name = Mirror OS 소프트웨어 센터
 back = 뒤로가기
 codec-header = "{ $application }"은(는) "{ $description }"을(를) 제공하는 추가 패키지가 필요합니다.
 codec-footer =
@@ -113,3 +113,4 @@ place-on-desktop = 바탕화면에 배치
 custom-flatpak-sources = 사용자 지정 Flatpak 저장소
 import-flatpakrepo = 사용자 지정 저장소를 추가하려면 .flatpakrepo 파일을 가져오세요
 no-custom-flatpak-sources = 추가된 사용자 지정 Flatpak 저장소가 없습니다
+comment = Mirror OS용 소프트웨어 센터

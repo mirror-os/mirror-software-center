@@ -1,4 +1,4 @@
-app-name = COSMIC Store
+app-name = Mirror OS Softwarecentrum
 back = Terug
 cancel = Annuleren
 install = Installeren

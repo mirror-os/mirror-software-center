@@ -1,4 +1,4 @@
-app-name = COSMIC Продавница
+app-name = Mirror OS Центар за софтвер
 back = Назад
 cancel = Прекини
 check-for-updates = Проверите ажурирања

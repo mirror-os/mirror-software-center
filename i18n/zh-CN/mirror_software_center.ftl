@@ -1,4 +1,4 @@
-app-name = COSMIC 软件商店
+app-name = Mirror OS 软件中心
 back = 返回
 cancel = 取消
 check-for-updates = 检查更新
@@ -143,7 +143,7 @@ light = 亮色模式
 addons = 插件
 view-more = 查看更多
 delete-app-data = 永久移除应用数据
-uninstall-app-flatpak-warning = 卸载 { $name } 会保留所有文件和数据。
+uninstall-app-flatpak-warning = 卸载 { $name } 会保留其所有文件和数据。
 version = { $version } 版本
 system-package-updates = 软件包更新
 system-packages-summary =
@@ -153,5 +153,5 @@ system-packages-summary =
     }
 system-packages = 系统软件包
 flatpak-runtimes = Flatpak 运行时
-comment = COSMIC 桌面的软件商店
-keywords = 应用;软件;商店;商店;
+comment = Mirror OS 的软件中心
+keywords = 应用;应用程序;软件;商店;

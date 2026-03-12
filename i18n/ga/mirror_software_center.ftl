@@ -1,11 +1,11 @@
-app-name = Stóras COSMIC
+app-name = Mirror OS Ionad Bogearraí
 back = Ar ais
 cancel = Cealaigh
 check-for-updates = Seiceáil do nuashonruithe
 checking-for-updates = Ag seiceáil le haghaidh nuashonruithe...
 install = Suiteáil
-no-installed-applications = Gan aon aipeanna suiteáilte.
-no-updates = Tá na haipeanna uile suiteáilte cothrom le dáta.
+no-installed-applications = Gan aon fheidhmchláir suiteáilte.
+no-updates = Tá gach feidhmchlár suiteáilte cothrom le dáta.
 no-results = Gan torthaí le haghaidh "{ $search }".
 notification-in-progress = Tá suiteálacha agus nuashonruithe ar siúl.
 open = Oscail
@@ -144,3 +144,5 @@ system-packages-summary =
         [one] { $count } pacáiste
        *[other] { $count } pacáistí
     }
+comment = Ionad bogearraí do Mirror OS
+keywords = Aip;Bogearraí;Siopa;

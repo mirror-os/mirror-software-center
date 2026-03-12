@@ -1,4 +1,4 @@
-app-name = COSMIC Store
+app-name = Mirror OS programų centras
 back = Grįžti
 cancel = Atšaukti
 check-for-updates = Patikrinti, ar yra atnaujinimų
@@ -111,3 +111,15 @@ software-repositories = Programinės įrangos saugyklos
 appearance = Išvaizda
 theme = Stilius
 match-desktop = Pagal darbalaukio temą
+system-package-updates = Paketo atnaujinimai
+system-packages-summary =
+    { $count ->
+        [one] { $count } paketas
+       *[other] { $count } paketai
+    }
+system-packages = Sistemos Paketai
+flatpak-runtimes = Flatpak Vykdymo paketai
+light = Šviesus
+dark = Tamsus
+comment = Programų centras Mirror OS sistemai
+keywords = Aplikacija;Programinė įranga;Parduotuvė;Parduotuvė;

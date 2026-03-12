@@ -1,4 +1,4 @@
-app-name = فروشگاه برنامه کازمیک
+app-name = مرکز نرم‌افزار Mirror OS
 back = بازگشت
 cancel = لفو
 check-for-updates = بازبینی بروزرسانی ها

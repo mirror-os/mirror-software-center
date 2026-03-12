@@ -1,4 +1,4 @@
-app-name = COSMIC Butikk
+app-name = Mirror OS Programvaresenter
 cancel = Avbryt
 close = Lukk
 back = Tilbake

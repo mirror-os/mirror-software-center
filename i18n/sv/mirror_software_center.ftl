@@ -1,5 +1,5 @@
-app-name = COSMIC Butik
-comment = Programbutik för skrivbordsmiljön COSMIC
+app-name = Mirror OS Programvarucenter
+comment = Programvarucenter för Mirror OS
 keywords = App;Software;Store;Program;Applikation;Butik;
 back = Bakåt
 cancel = Avbryt

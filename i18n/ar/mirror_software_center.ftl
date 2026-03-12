@@ -1,5 +1,5 @@
-app-name = متجر COSMIC
-comment = متجر تطبيقات لسطح مكتب COSMIC
+app-name = مركز برامج Mirror OS
+comment = مركز البرامج لنظام Mirror OS
 keywords = متجر;تطبيق;تطبيقات;برامج;
 back = ارجع
 cancel = ألغِ
@@ -71,7 +71,7 @@ updates = التحديثات
 ## Applets page
 
 enable-flathub-cosmic = يرجى تفعيل Flathub و COSMIC Flatpak لرؤية البريمجات المتاحة.
-manage-repositories = أدر المستودعات
+manage-repositories = أدِر المستودعات
 # Explore Pages
 editors-choice = اختيار المحرِر
 popular-apps = التطبيقات الشائعة

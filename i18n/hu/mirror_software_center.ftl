@@ -1,5 +1,5 @@
-app-name = COSMIC Áruház
-comment = Alkalmazásáruház a COSMIC asztali környezethez
+app-name = Mirror OS Szoftverközpont
+comment = Szoftverközpont a Mirror OS-hez
 keywords = applikációk;bolt;szoftver;csomagkezelő;alkalmazások;programok;
 back = Vissza
 cancel = Mégse

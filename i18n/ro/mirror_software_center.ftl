@@ -1,4 +1,4 @@
-app-name = Magazin COSMIC
+app-name = Mirror OS Centrul de software
 back = Înapoi
 cancel = Anulează
 check-for-updates = Verifică actualizările

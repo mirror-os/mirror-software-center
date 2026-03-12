@@ -1,4 +1,4 @@
-app-name = COSMIC verslun
+app-name = Mirror OS hugbúnaðarmiðstöð
 cancel = Hætta við
 import = Flytja inn
 settings = Stillingar

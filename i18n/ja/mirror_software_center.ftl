@@ -1,4 +1,4 @@
-app-name = COSMICストア
+app-name = Mirror OS ソフトウェアセンター
 back = 戻る
 cancel = キャンセル
 check-for-updates = アップデートの確認

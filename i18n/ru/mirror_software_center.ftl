@@ -1,4 +1,4 @@
-app-name = Магазин приложений
+app-name = Mirror OS Центр программного обеспечения
 keywords = Приложения;Приложений;ПО;Программы;Маркет;Магазин;
 back = Назад
 cancel = Отмена
@@ -139,4 +139,4 @@ system-packages-summary =
         [few] { $count } пакета
        *[other] { $count } пакетов
     }
-comment = Магазин приложений для среды COSMIC
+comment = Центр программного обеспечения Mirror OS

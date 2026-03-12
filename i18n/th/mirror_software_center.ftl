@@ -1,4 +1,4 @@
-app-name = ร้านค้า COSMIC
+app-name = Mirror OS ศูนย์ซอฟต์แวร์
 back = กลับ
 cancel = ยกเลิก
 check-for-updates = ตรวจสอบอัปเดต
