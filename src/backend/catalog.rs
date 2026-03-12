@@ -230,10 +230,11 @@ fn build_nix_info(
         vec![]
     };
 
-    let summary = if description.len() <= 120 {
+    let summary = if description.chars().count() <= 120 {
         description.to_string()
     } else {
-        format!("{}…", &description[..117])
+        let truncated: String = description.chars().take(117).collect();
+        format!("{}…", truncated)
     };
     let full_desc = if !long_description.is_empty() {
         long_description.to_string()
@@ -271,15 +272,19 @@ fn build_nix_info(
 
 impl Backend for CatalogBackend {
     fn load_caches(&mut self, _refresh: bool) -> Result<(), Box<dyn Error>> {
+        log::info!("catalog: opening DB at {}", self.db_path.display());
         let conn = Connection::open_with_flags(
             &self.db_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        log::info!("catalog: DB opened successfully");
 
         self.infos.clear();
 
         // ── Nix packages ──────────────────────────────────────────────────────
         {
+            log::info!("catalog: loading nix_packages...");
+            let t = std::time::Instant::now();
             let mut stmt = conn.prepare(
                 "SELECT attr, pname, version, description, long_description, homepage, license
                  FROM nix_packages",
@@ -295,6 +300,7 @@ impl Backend for CatalogBackend {
                     row.get::<_, String>(6)?,
                 ))
             })?;
+            let mut nix_count = 0usize;
             for row in rows.filter_map(|r| r.ok()) {
                 let (attr, pname, version, description, long_description, homepage, license) = row;
                 let info = build_nix_info(
@@ -302,13 +308,16 @@ impl Backend for CatalogBackend {
                 );
                 let id = AppId::new(&attr);
                 self.infos.insert(id, Arc::new(info));
+                nix_count += 1;
             }
+            log::info!("catalog: loaded {} nix packages in {:?}", nix_count, t.elapsed());
         }
 
         // ── Flatpak apps (loaded second so they win on deduplication by slug) ─
         // The app_map table tells us which Flatpak IDs and Nix attrs share a slug.
         // For slugs with both sources, we load Flatpak as the primary AppInfo and
         // store the nix_attr in pkgnames so operation() can use it.
+        log::info!("catalog: loading app_map...");
         let app_map: HashMap<String, (Option<String>, Option<String>)> = {
             let mut stmt = conn.prepare(
                 "SELECT flatpak_id, nix_attr FROM app_map WHERE flatpak_id IS NOT NULL",
@@ -329,6 +338,8 @@ impl Backend for CatalogBackend {
         };
 
         {
+            log::info!("catalog: loading flatpak_apps...");
+            let t = std::time::Instant::now();
             let mut stmt = conn.prepare(
                 "SELECT app_id, name, summary, description, version, developer, license,
                         homepage, bugtracker_url, donation_url, categories, icon_name,
@@ -385,6 +396,8 @@ impl Backend for CatalogBackend {
                 let id = AppId::new(&app_id);
                 self.infos.insert(id, Arc::new(info));
             }
+            let flatpak_loaded = self.infos.values().filter(|i| i.source_id == "flathub").count();
+            log::info!("catalog: loaded {} flatpak apps in {:?}", flatpak_loaded, t.elapsed());
         }
 
         let flatpak_count = self.infos.values().filter(|i| i.source_id == "flathub").count();
