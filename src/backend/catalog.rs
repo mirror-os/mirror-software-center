@@ -258,7 +258,12 @@ fn build_nix_info(
         categories: vec![],
         desktop_ids: vec![],
         flatpak_refs: vec![],
-        icons: vec![AppIcon::Stock("package-x-generic".to_string())],
+        // Use pname as the XDG icon name — installed GUI apps register their
+        // icon under this name in the system theme. Falls through to the
+        // generic icon in resolve_icon() if not found.
+        icons: vec![AppIcon::Stock(
+            if !pname.is_empty() { pname.to_string() } else { attr.to_string() }
+        )],
         provides: vec![],
         releases: vec![],
         screenshots: vec![],
@@ -399,6 +404,20 @@ impl Backend for CatalogBackend {
             }
             let flatpak_loaded = self.infos.values().filter(|i| i.source_id == "flathub").count();
             log::info!("catalog: loaded {} flatpak apps in {:?}", flatpak_loaded, t.elapsed());
+
+            // Deduplication: remove Nix entries for which a Flatpak equivalent
+            // exists in app_map.  Flatpak wins — its AppInfo already has the Nix
+            // attr recorded in pkgnames so install logic can still target Nix if
+            // the user explicitly requests it.
+            let mut removed = 0usize;
+            for (_, nix_attr) in app_map.values().filter_map(|(_, n)| n.as_ref().map(|n| ((), n))) {
+                if self.infos.remove(&AppId::new(nix_attr)).is_some() {
+                    removed += 1;
+                }
+            }
+            if removed > 0 {
+                log::info!("catalog: removed {} Nix duplicates (Flatpak entry retained)", removed);
+            }
         }
 
         let flatpak_count = self.infos.values().filter(|i| i.source_id == "flathub").count();
