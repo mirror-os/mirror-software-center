@@ -83,6 +83,13 @@ pub trait Backend: fmt::Debug + Send + Sync {
         None
     }
 
+    /// Return Nix AppInfo entries that were merged into Flatpak entries during dedup.
+    /// Each tuple is (flatpak_app_id, nix_app_info).  These are inserted as secondary
+    /// AppEntries in the Apps map so Nix source filtering and the source dropdown work.
+    fn catalog_secondary_infos(&self) -> &[(AppId, Arc<AppInfo>)] {
+        &[]
+    }
+
     /// Resolve an icon handle for the given AppInfo.
     /// Backends that manage local media caches override this.
     fn resolve_icon(&self, _info: &AppInfo) -> Option<widget::icon::Handle> {

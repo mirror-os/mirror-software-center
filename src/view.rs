@@ -115,6 +115,7 @@ impl App {
         selected_id: &AppId,
         selected_info: &Arc<AppInfo>,
         addon: bool,
+        other_source_installed: bool,
     ) -> Vec<Element<'_, Message>> {
         //TODO: more efficient checks
         let mut waiting_refresh = false;
@@ -213,11 +214,16 @@ impl App {
                 );
             }
         } else {
+            let label = if other_source_installed {
+                fl!("switch-source", source = selected_info.source_name.as_str())
+            } else {
+                fl!("install")
+            };
             buttons.push(
                 if addon {
-                    widget::button::standard(fl!("install"))
+                    widget::button::standard(label)
                 } else {
-                    widget::button::suggested(fl!("install"))
+                    widget::button::suggested(label)
                 }
                 .on_press(Message::Operation(
                     OperationKind::Install,
@@ -351,11 +357,14 @@ impl App {
                         .on_press(Message::SelectNone),
                 );
 
+                let other_source_installed = selected.sources.iter()
+                    .any(|s| s.source_id != selected.info.source_id && s.installed);
                 let buttons = self.selected_buttons(
                     selected.backend_name,
                     &selected.id,
                     &selected.info,
                     false,
+                    other_source_installed,
                 );
                 column = column.push(
                     widget::row::with_children(vec![
@@ -529,6 +538,7 @@ impl App {
                             addon_id,
                             addon_info,
                             true,
+                            false,
                         );
                         list = list.add(
                             widget::settings::item::builder(&addon_info.name)

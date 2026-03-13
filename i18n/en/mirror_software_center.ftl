@@ -7,6 +7,7 @@ check-for-updates = Check for updates
 checking-for-updates = Checking for updates...
 close = Close
 install = Install
+switch-source = Switch to { $source }
 no-installed-applications = No installed applications.
 no-updates = All installed applications are up to date.
 no-results = No results for "{$search}".

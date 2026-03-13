@@ -372,6 +372,7 @@ pub struct SelectedSource {
     pub backend_name: BackendName,
     pub source_id: String,
     pub source_name: String,
+    pub installed: bool,
 }
 
 impl SelectedSource {
@@ -384,6 +385,7 @@ impl SelectedSource {
             } else {
                 info.source_name.clone()
             },
+            installed,
         }
     }
 }
@@ -1056,11 +1058,20 @@ impl App {
                             .filter_map(|(_source, id)| {
                                 let app_id = AppId::new(&id);
                                 let entries = apps.get(&app_id)?;
+                                // Always display using the first (highest-priority) entry.
                                 let entry = entries.first()?;
                                 if !matches!(entry.info.kind, AppKind::DesktopApplication) {
                                     return None;
                                 }
-                                if !filter.matches(&entry.info, entry.installed) {
+                                // For source filtering, check if ANY entry passes — a deduped
+                                // app (e.g. Spotify) has both a Flatpak and a Nix AppEntry under
+                                // the same AppId; it should appear under either source filter.
+                                let filter_passes = filter.is_empty()
+                                    || entries.iter().any(|e| {
+                                        matches!(e.info.kind, AppKind::DesktopApplication)
+                                            && filter.matches(&e.info, e.installed)
+                                    });
+                                if !filter_passes {
                                     return None;
                                 }
                                 // Resolve icon inline for top results
@@ -1386,6 +1397,28 @@ impl App {
                     for (id, entry) in all_entries {
                         apps.entry(id).or_default().push(entry);
                     }
+
+                    // Process secondary infos from catalog backends.
+                    // These are Nix AppEntries for apps that were deduped under a Flatpak AppId.
+                    // Adding them under the same AppId enables Nix source filtering and the
+                    // source dropdown for deduped apps (e.g. Spotify available on both Flathub
+                    // and Nixpkgs appears as one card with two sources in the dropdown).
+                    for (backend_name, backend) in backends.iter() {
+                        for (app_id, info) in backend.catalog_secondary_infos() {
+                            let entry = AppEntry {
+                                backend_name: *backend_name,
+                                info: info.clone(),
+                                installed: Self::is_installed_inner(
+                                    installed_ref,
+                                    *backend_name,
+                                    app_id,
+                                    info,
+                                ),
+                            };
+                            apps.entry(app_id.clone()).or_default().push(entry);
+                        }
+                    }
+
                     log::debug!(
                         "update_apps: collected {} entries in {:?}",
                         entry_count,

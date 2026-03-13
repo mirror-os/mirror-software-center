@@ -48,6 +48,11 @@ pub struct CatalogBackend {
     /// Used in installed() to map Nix-installed apps to the Flatpak AppId so
     /// the deduplicated Flatpak card is correctly shown as installed.
     nix_to_flatpak: HashMap<String, String>,
+    /// Nix AppInfo entries removed during deduplication, stored under the corresponding
+    /// Flatpak AppId.  Exposed via catalog_secondary_infos() so the Apps map in main.rs
+    /// can add a Nix AppEntry under the Flatpak AppId, enabling Nix source filtering
+    /// and the source dropdown for deduped apps.
+    secondary_infos: Vec<(AppId, Arc<AppInfo>)>,
 }
 
 impl CatalogBackend {
@@ -57,6 +62,7 @@ impl CatalogBackend {
             media_dir,
             infos: HashMap::new(),
             nix_to_flatpak: HashMap::new(),
+            secondary_infos: Vec::new(),
         }
     }
 }
@@ -623,14 +629,21 @@ impl Backend for CatalogBackend {
             // exists in app_map.  Flatpak wins — its AppInfo already has the Nix
             // attr recorded in pkgnames so install logic can still target Nix if
             // the user explicitly requests it.
+            // The removed Nix AppInfo is saved into secondary_infos under the Flatpak
+            // AppId so it can be added as a secondary AppEntry in the Apps map — enabling
+            // Nix source filtering and the source dropdown for deduped apps.
+            self.secondary_infos.clear();
             let mut removed = 0usize;
-            for (_, nix_attr) in app_map.values().filter_map(|(_, n)| n.as_ref().map(|n| ((), n))) {
-                if self.infos.remove(&AppId::new(nix_attr)).is_some() {
-                    removed += 1;
+            for (fp_id, (_, nix_attr_opt)) in &app_map {
+                if let Some(nix_attr) = nix_attr_opt {
+                    if let Some(nix_info) = self.infos.remove(&AppId::new(nix_attr)) {
+                        self.secondary_infos.push((AppId::new(fp_id), nix_info));
+                        removed += 1;
+                    }
                 }
             }
             if removed > 0 {
-                log::info!("catalog: removed {} Nix duplicates (Flatpak entry retained)", removed);
+                log::info!("catalog: removed {} Nix duplicates (Flatpak entry retained, {} saved as secondary)", removed, self.secondary_infos.len());
             }
         }
 
@@ -660,6 +673,10 @@ impl Backend for CatalogBackend {
 
     fn catalog_infos(&self) -> Option<&HashMap<AppId, Arc<AppInfo>>> {
         Some(&self.infos)
+    }
+
+    fn catalog_secondary_infos(&self) -> &[(AppId, Arc<AppInfo>)] {
+        &self.secondary_infos
     }
 
     fn resolve_icon(&self, info: &AppInfo) -> Option<widget::icon::Handle> {
@@ -717,12 +734,20 @@ impl Backend for CatalogBackend {
 
                     // For Nix apps whose Flatpak equivalent was kept after dedup, the Nix
                     // AppId was removed from self.infos.  Fall back through nix_to_flatpak
-                    // so the deduplicated Flatpak card is correctly shown as installed.
+                    // to find the corresponding secondary_infos entry (Nix AppInfo stored
+                    // under the Flatpak AppId).  Using the Nix AppInfo (source_id="nixpkgs")
+                    // with the Flatpak AppId ensures is_installed_inner matches the Nix
+                    // AppEntry in the Apps map (not the Flatpak AppEntry).
                     let (id, info) = if let Some(cached) = direct {
                         (AppId::new(&source_id), cached.clone())
                     } else if source == "nix" {
                         if let Some(flatpak_id) = self.nix_to_flatpak.get(&source_id) {
-                            if let Some(fp_info) = self.infos.get(&AppId::new(flatpak_id)) {
+                            // Prefer the Nix AppInfo from secondary_infos so source_id matches
+                            if let Some((_, nix_info)) = self.secondary_infos.iter()
+                                .find(|(fid, _)| fid.raw() == flatpak_id.as_str())
+                            {
+                                (AppId::new(flatpak_id), nix_info.clone())
+                            } else if let Some(fp_info) = self.infos.get(&AppId::new(flatpak_id)) {
                                 (AppId::new(flatpak_id), fp_info.clone())
                             } else {
                                 (AppId::new(&source_id), Arc::new(AppInfo {
