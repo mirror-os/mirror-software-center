@@ -383,13 +383,27 @@ fn build_nix_info(
     homepage: &str,
     license: &str,
     icon_name: &str,
+    maintainers_json: &str,
     desktop_ids: Vec<String>,
 ) -> AppInfo {
-    let urls = if !homepage.is_empty() {
-        vec![AppUrl::Homepage(homepage.to_string())]
-    } else {
-        vec![]
-    };
+    // Parse maintainers JSON array (populated by nix-meta enrichment phase).
+    // Each entry is a GitHub username or display name.
+    let maintainers: Vec<String> =
+        serde_json::from_str(maintainers_json).unwrap_or_default();
+    let primary_maintainer = maintainers.first().map(|s| s.as_str()).unwrap_or("");
+
+    // Build URL list: homepage first, then GitHub link for the primary maintainer
+    // (if they have a GitHub username — no spaces or @).
+    let mut urls = Vec::new();
+    if !homepage.is_empty() {
+        urls.push(AppUrl::Homepage(homepage.to_string()));
+    }
+    if !primary_maintainer.is_empty()
+        && !primary_maintainer.contains('@')
+        && !primary_maintainer.contains(' ')
+    {
+        urls.push(AppUrl::Contact(format!("https://github.com/{}", primary_maintainer)));
+    }
 
     let summary = if description.chars().count() <= 120 {
         description.to_string()
@@ -410,7 +424,9 @@ fn build_nix_info(
         name: if !pname.is_empty() { pname.to_string() } else { attr.to_string() },
         summary,
         kind: AppKind::DesktopApplication,
-        developer_name: String::new(),
+        // Use the primary nixpkgs maintainer as the developer name when no upstream
+        // developer is known (nix search doesn't expose upstream developer info).
+        developer_name: primary_maintainer.to_string(),
         description: full_desc,
         license_opt: if !license.is_empty() { Some(license.to_string()) } else { None },
         pkgnames: vec![attr.to_string()],
@@ -468,7 +484,7 @@ impl Backend for CatalogBackend {
             );
 
             let mut stmt = conn.prepare(
-                "SELECT attr, pname, version, description, long_description, homepage, license
+                "SELECT attr, pname, version, description, long_description, homepage, license, maintainers
                  FROM nix_packages",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -480,11 +496,12 @@ impl Backend for CatalogBackend {
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
                 ))
             })?;
             let mut nix_count = 0usize;
             for row in rows.filter_map(|r| r.ok()) {
-                let (attr, pname, version, description, long_description, homepage, license) = row;
+                let (attr, pname, version, description, long_description, homepage, license, maintainers) = row;
 
                 // Try to find a matching desktop file by pname or attr (case-insensitive).
                 let desktop_key_pname = pname.to_lowercase();
@@ -527,7 +544,7 @@ impl Backend for CatalogBackend {
 
                 let info = build_nix_info(
                     &attr, &pname, &version, &description, &long_description, &homepage,
-                    &license, &icon_name, desktop_ids,
+                    &license, &icon_name, &maintainers, desktop_ids,
                 );
                 let id = AppId::new(&attr);
                 self.infos.insert(id, Arc::new(info));
@@ -641,19 +658,13 @@ impl Backend for CatalogBackend {
             for (fp_id, (_, nix_attr_opt)) in &app_map {
                 if let Some(nix_attr) = nix_attr_opt {
                     if let Some(nix_info) = self.infos.remove(&AppId::new(nix_attr)) {
-                        // Enrich the Nix secondary entry with Flatpak metadata so the detail
-                        // view shows rich descriptions, screenshots, and the correct icon when
-                        // the user switches to the Nixpkgs source dropdown option.
-                        // The Nix source_id, source_name, pkgnames (for install routing), and
-                        // version are kept; everything else is copied from the richer Flatpak entry.
+                        // Copy only the Flatpak icon so resolve_icon finds the locally-cached
+                        // PNG.  All other fields (description, urls, developer_name, releases,
+                        // screenshots) stay as the Nix package's own data, which will be rich
+                        // once the nix-meta enrichment phase has run.
                         let enriched = if let Some(fp_info) = self.infos.get(&AppId::new(fp_id)) {
                             let mut n = (*nix_info).clone();
-                            n.description   = fp_info.description.clone();
-                            n.screenshots   = fp_info.screenshots.clone();
-                            n.releases      = fp_info.releases.clone();
-                            n.developer_name = fp_info.developer_name.clone();
-                            n.icons         = fp_info.icons.clone();
-                            n.urls          = fp_info.urls.clone();
+                            n.icons = fp_info.icons.clone();
                             Arc::new(n)
                         } else {
                             nix_info
