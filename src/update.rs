@@ -760,6 +760,14 @@ impl App {
                 let mut next_ids = None;
                 if let Some(selected) = &self.selected_opt {
                     if let Some(source) = selected.sources.get(i) {
+                        // If the user clicked the source that is already active, do nothing.
+                        // Calling select() would reset screenshot_images; since the subscription
+                        // IDs haven't changed the screenshots wouldn't re-load.
+                        if source.backend_name == selected.backend_name
+                            && source.source_id == selected.info.source_id
+                        {
+                            return Task::none();
+                        }
                         next_ids = Some((
                             source.backend_name,
                             source.source_id.clone(),
@@ -799,6 +807,18 @@ impl App {
                                     package.info.clone(),
                                 );
                             }
+                        }
+                    }
+
+                    // Fallback: look in the apps map (covers catalog backend entries including
+                    // Nix AppEntries added via catalog_secondary_infos).
+                    if let Some(entries) = self.apps.get(&id) {
+                        if let Some(entry) = entries.iter().find(|e| {
+                            e.backend_name == backend_name && e.info.source_id == source_id
+                        }) {
+                            let icon_opt = self.backends.get(&backend_name)
+                                .and_then(|b| b.resolve_icon(&entry.info));
+                            return self.select(backend_name, id, icon_opt, entry.info.clone());
                         }
                     }
                 }
