@@ -850,7 +850,13 @@ impl Backend for CatalogBackend {
         };
 
         let source_flag = if info.source_id == "nixpkgs" { "--nix" } else { "--flatpak" };
-        let raw_id = app_id.raw().to_string();
+        // For Nix installs the CLI needs the Nix attr name (e.g. "slack"), not the Flatpak AppId
+        // ("com.slack.Slack"). The Nix attr is stored in info.pkgnames[0] for Nix AppInfo entries.
+        let raw_id = if info.source_id == "nixpkgs" {
+            info.pkgnames.first().map(|s| s.as_str()).unwrap_or_else(|| app_id.raw()).to_string()
+        } else {
+            app_id.raw().to_string()
+        };
 
         let mut cmd = Command::new("mirror-os");
         // Ask trigger_switch to tee HM output to stdout so we can track progress
