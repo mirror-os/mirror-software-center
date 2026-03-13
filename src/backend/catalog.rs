@@ -266,6 +266,84 @@ fn collect_icon_stems_from_dir(dir: &Path, names: &mut HashSet<String>) {
     }
 }
 
+/// Info extracted from a single `.desktop` file relevant to the catalog backend.
+struct DesktopFileInfo {
+    /// Stem of the desktop file, e.g. `"winboard"` from `"winboard.desktop"`.
+    desktop_stem: String,
+    /// Value of the `Icon=` field, if present, e.g. `"winboard"`.
+    icon_name: Option<String>,
+}
+
+/// Scan XDG `share/applications/` directories (Nix profile + system) and return
+/// a map keyed by the *lowercase* desktop stem for fast pname/attr lookup.
+///
+/// This is used to:
+///   1. Populate `AppInfo::desktop_ids` so the "Open" button works for Nix apps.
+///   2. Pick the icon name from `Icon=` rather than guessing from pname, so apps
+///      like `winboard` (whose icon is also `"winboard"` but pname might differ)
+///      are handled correctly.
+fn scan_nix_desktop_files() -> HashMap<String, DesktopFileInfo> {
+    let mut map = HashMap::new();
+
+    let mut search_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        // Nix home-manager profile (most important for mirror-os install)
+        search_dirs.push(home.join(".nix-profile/share/applications"));
+        search_dirs.push(home.join(".local/share/applications"));
+    }
+    // System applications (fallback — Flatpaks go here via flatpak run wrappers)
+    search_dirs.push(PathBuf::from("/usr/share/applications"));
+
+    for dir in &search_dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            let Some(stem_os) = path.file_stem() else { continue };
+            let stem = stem_os.to_string_lossy().to_string();
+            if stem.is_empty() {
+                continue;
+            }
+            let icon_name = read_desktop_icon_field(&path);
+            let key = stem.to_lowercase();
+            // First match wins (Nix profile takes priority over system).
+            map.entry(key).or_insert(DesktopFileInfo {
+                desktop_stem: stem,
+                icon_name,
+            });
+        }
+    }
+    map
+}
+
+/// Read only the `Icon=` line from a `.desktop` file without parsing the whole file.
+fn read_desktop_icon_field(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut in_desktop_entry = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[Desktop Entry]" {
+            in_desktop_entry = true;
+            continue;
+        }
+        if in_desktop_entry {
+            if trimmed.starts_with('[') {
+                break; // entered a different section
+            }
+            if let Some(val) = trimmed.strip_prefix("Icon=") {
+                let icon = val.trim().to_string();
+                if !icon.is_empty() {
+                    return Some(icon);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn build_nix_info(
     attr: &str,
     pname: &str,
@@ -275,6 +353,7 @@ fn build_nix_info(
     homepage: &str,
     license: &str,
     icon_name: &str,
+    desktop_ids: Vec<String>,
 ) -> AppInfo {
     let urls = if !homepage.is_empty() {
         vec![AppUrl::Homepage(homepage.to_string())]
@@ -307,7 +386,7 @@ fn build_nix_info(
         pkgnames: vec![attr.to_string()],
         package_paths: vec![],
         categories: vec![],
-        desktop_ids: vec![],
+        desktop_ids,
         flatpak_refs: vec![],
         icons: vec![AppIcon::Stock(icon_name.to_string())],
         provides: vec![],
@@ -338,14 +417,20 @@ impl Backend for CatalogBackend {
             log::info!("catalog: loading nix_packages...");
             let t = std::time::Instant::now();
 
-            // Scan available icon names once so we never call from_name() for
-            // an icon that doesn't exist in the theme.  Missing-icon traversal
-            // in COSMIC is slow (~50 ms each) and would cause a multi-second
-            // stall when resolving icons for a page of Nix results.
+            // Scan icon theme dirs so we never call from_name() for a name that
+            // doesn't exist — COSMIC's missing-icon traversal is slow (~50 ms each).
             let available_icons = scan_available_icon_names();
             log::info!(
                 "catalog: found {} icon names in system theme dirs",
                 available_icons.len()
+            );
+
+            // Scan desktop files in the Nix profile to get accurate icon names
+            // (from Icon= field) and populate desktop_ids for the Open button.
+            let desktop_files = scan_nix_desktop_files();
+            log::info!(
+                "catalog: found {} desktop files in Nix profile / system",
+                desktop_files.len()
             );
 
             let mut stmt = conn.prepare(
@@ -366,19 +451,49 @@ impl Backend for CatalogBackend {
             let mut nix_count = 0usize;
             for row in rows.filter_map(|r| r.ok()) {
                 let (attr, pname, version, description, long_description, homepage, license) = row;
-                // Pick icon name only if it actually exists in the scanned theme.
-                // Fall back to "package-x-generic" so resolve_icon() short-circuits
-                // immediately without any theme traversal.
-                let icon_name = if !pname.is_empty() && available_icons.contains(&pname) {
-                    pname.clone()
-                } else if available_icons.contains(&attr) {
-                    attr.clone()
+
+                // Try to find a matching desktop file by pname or attr (case-insensitive).
+                let desktop_key_pname = pname.to_lowercase();
+                let desktop_key_attr = attr.to_lowercase();
+                let desktop_match = desktop_files
+                    .get(&desktop_key_pname)
+                    .or_else(|| desktop_files.get(&desktop_key_attr));
+
+                let (icon_name, desktop_ids) = if let Some(df) = desktop_match {
+                    // Use the icon name from the desktop file's Icon= field if it
+                    // actually exists in the theme; otherwise fall through to pname.
+                    let icon = df
+                        .icon_name
+                        .as_deref()
+                        .filter(|n| available_icons.contains(*n))
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            // Desktop file found but icon not in theme — try pname/attr.
+                            if !pname.is_empty() && available_icons.contains(&pname) {
+                                pname.clone()
+                            } else if available_icons.contains(&attr) {
+                                attr.clone()
+                            } else {
+                                "package-x-generic".to_string()
+                            }
+                        });
+                    (icon, vec![df.desktop_stem.clone()])
                 } else {
-                    "package-x-generic".to_string()
+                    // No desktop file — pick icon from theme scan by pname/attr,
+                    // fall back to generic so resolve_icon() short-circuits immediately.
+                    let icon = if !pname.is_empty() && available_icons.contains(&pname) {
+                        pname.clone()
+                    } else if available_icons.contains(&attr) {
+                        attr.clone()
+                    } else {
+                        "package-x-generic".to_string()
+                    };
+                    (icon, vec![])
                 };
+
                 let info = build_nix_info(
                     &attr, &pname, &version, &description, &long_description, &homepage,
-                    &license, &icon_name,
+                    &license, &icon_name, desktop_ids,
                 );
                 let id = AppId::new(&attr);
                 self.infos.insert(id, Arc::new(info));
