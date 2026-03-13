@@ -481,7 +481,6 @@ impl App {
                             return None;
                         }
                     };
-                    //TODO: handle Terminal=true
                     let Some(exec) = entry
                         .get("Desktop Entry", "Exec")
                         .and_then(|attr| attr.first())
@@ -489,8 +488,19 @@ impl App {
                         log::warn!("no exec section in {:?}", path);
                         return None;
                     };
+                    let is_terminal = entry
+                        .get("Desktop Entry", "Terminal")
+                        .and_then(|a| a.first())
+                        .map(|s| s.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false);
+                    let exec_str = if is_terminal {
+                        // Wrap in the COSMIC terminal so CLI apps open in a window.
+                        format!("cosmic-terminal -- {}", exec)
+                    } else {
+                        exec.to_string()
+                    };
                     //TODO: use libcosmic for loading desktop data
-                    Some((exec.to_string(), desktop_id))
+                    Some((exec_str, desktop_id))
                 })
                 .await
                 .unwrap_or(None)

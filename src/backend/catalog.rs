@@ -44,6 +44,10 @@ pub struct CatalogBackend {
     media_dir: PathBuf,
     /// In-memory app info map populated by load_caches()
     pub infos: HashMap<AppId, Arc<AppInfo>>,
+    /// nix_attr → flatpak_id, built from app_map during load_caches().
+    /// Used in installed() to map Nix-installed apps to the Flatpak AppId so
+    /// the deduplicated Flatpak card is correctly shown as installed.
+    nix_to_flatpak: HashMap<String, String>,
 }
 
 impl CatalogBackend {
@@ -52,6 +56,7 @@ impl CatalogBackend {
             db_path,
             media_dir,
             infos: HashMap::new(),
+            nix_to_flatpak: HashMap::new(),
         }
     }
 }
@@ -267,6 +272,7 @@ fn collect_icon_stems_from_dir(dir: &Path, names: &mut HashSet<String>) {
 }
 
 /// Info extracted from a single `.desktop` file relevant to the catalog backend.
+#[derive(Clone)]
 struct DesktopFileInfo {
     /// Stem of the desktop file, e.g. `"winboard"` from `"winboard.desktop"`.
     desktop_stem: String,
@@ -308,20 +314,30 @@ fn scan_nix_desktop_files() -> HashMap<String, DesktopFileInfo> {
                 continue;
             }
             let icon_name = read_desktop_icon_field(&path);
-            let key = stem.to_lowercase();
-            // First match wins (Nix profile takes priority over system).
-            map.entry(key).or_insert(DesktopFileInfo {
-                desktop_stem: stem,
-                icon_name,
-            });
+            let name_field = read_desktop_name_field(&path);
+
+            let info = DesktopFileInfo { desktop_stem: stem.clone(), icon_name };
+
+            // Key 1: exact lowercase stem (e.g. "winboard", "io.github.dvlv.boxbuddyrs")
+            map.entry(stem.to_lowercase()).or_insert_with(|| info.clone());
+
+            // Key 2: Name= field lowercased with spaces removed.
+            // Matches reverse-domain apps: Name="Box Buddy" → key "boxbuddy" = pname "boxbuddy".
+            if let Some(name) = name_field {
+                let name_key = name.to_lowercase().replace(' ', "");
+                if !name_key.is_empty() {
+                    map.entry(name_key).or_insert(info);
+                }
+            }
         }
     }
     map
 }
 
-/// Read only the `Icon=` line from a `.desktop` file without parsing the whole file.
-fn read_desktop_icon_field(path: &Path) -> Option<String> {
+/// Read a single named field from the `[Desktop Entry]` section of a `.desktop` file.
+fn read_desktop_field(path: &Path, field: &str) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
+    let prefix = format!("{}=", field);
     let mut in_desktop_entry = false;
     for line in content.lines() {
         let trimmed = line.trim();
@@ -331,17 +347,25 @@ fn read_desktop_icon_field(path: &Path) -> Option<String> {
         }
         if in_desktop_entry {
             if trimmed.starts_with('[') {
-                break; // entered a different section
+                break;
             }
-            if let Some(val) = trimmed.strip_prefix("Icon=") {
-                let icon = val.trim().to_string();
-                if !icon.is_empty() {
-                    return Some(icon);
+            if let Some(val) = trimmed.strip_prefix(&prefix) {
+                let v = val.trim().to_string();
+                if !v.is_empty() {
+                    return Some(v);
                 }
             }
         }
     }
     None
+}
+
+fn read_desktop_icon_field(path: &Path) -> Option<String> {
+    read_desktop_field(path, "Icon")
+}
+
+fn read_desktop_name_field(path: &Path) -> Option<String> {
+    read_desktop_field(path, "Name")
 }
 
 fn build_nix_info(
@@ -526,6 +550,13 @@ impl Backend for CatalogBackend {
             m
         };
 
+        // Build reverse map: nix_attr → flatpak_id for cross-source installed detection.
+        for (fp_id, (_, nix_opt)) in &app_map {
+            if let Some(nix_attr) = nix_opt {
+                self.nix_to_flatpak.insert(nix_attr.clone(), fp_id.clone());
+            }
+        }
+
         {
             log::info!("catalog: loading flatpak_apps...");
             let t = std::time::Instant::now();
@@ -677,20 +708,50 @@ impl Backend for CatalogBackend {
                         continue;
                     }
                     seen_ids.insert(source_id.clone());
+                    let source = item["source"].as_str().unwrap_or("");
                     let display_name = item["display_name"].as_str().unwrap_or("").to_string();
                     let version = item["version"].as_str().unwrap_or("").to_string();
-                    let id = AppId::new(&source_id);
-                    let info = if let Some(cached) = self.infos.get(&id) {
-                        cached.clone()
+
+                    // Direct lookup by source_id.
+                    let direct = self.infos.get(&AppId::new(&source_id));
+
+                    // For Nix apps whose Flatpak equivalent was kept after dedup, the Nix
+                    // AppId was removed from self.infos.  Fall back through nix_to_flatpak
+                    // so the deduplicated Flatpak card is correctly shown as installed.
+                    let (id, info) = if let Some(cached) = direct {
+                        (AppId::new(&source_id), cached.clone())
+                    } else if source == "nix" {
+                        if let Some(flatpak_id) = self.nix_to_flatpak.get(&source_id) {
+                            if let Some(fp_info) = self.infos.get(&AppId::new(flatpak_id)) {
+                                (AppId::new(flatpak_id), fp_info.clone())
+                            } else {
+                                (AppId::new(&source_id), Arc::new(AppInfo {
+                                    source_id: source_id.clone(),
+                                    source_name: "nixpkgs".to_string(),
+                                    name: display_name,
+                                    icons: vec![AppIcon::Stock("package-x-generic".to_string())],
+                                    ..AppInfo::default()
+                                }))
+                            }
+                        } else {
+                            (AppId::new(&source_id), Arc::new(AppInfo {
+                                source_id: source_id.clone(),
+                                source_name: "nixpkgs".to_string(),
+                                name: display_name,
+                                icons: vec![AppIcon::Stock("package-x-generic".to_string())],
+                                ..AppInfo::default()
+                            }))
+                        }
                     } else {
-                        Arc::new(AppInfo {
+                        (AppId::new(&source_id), Arc::new(AppInfo {
                             source_id: source_id.clone(),
-                            source_name: item["source"].as_str().unwrap_or("").to_string(),
+                            source_name: source.to_string(),
                             name: display_name,
                             icons: vec![AppIcon::Stock("package-x-generic".to_string())],
                             ..AppInfo::default()
-                        })
+                        }))
                     };
+
                     let icon = self.resolve_icon(&info).unwrap_or_else(|| {
                         widget::icon::from_name("package-x-generic").size(128).handle()
                     });
