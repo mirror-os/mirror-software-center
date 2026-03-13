@@ -16,7 +16,7 @@
 use cosmic::widget;
 use rusqlite::{Connection, OpenFlags, params};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     fmt,
     io::{BufRead, BufReader},
@@ -216,6 +216,56 @@ fn build_flatpak_info(
     }
 }
 
+/// Scan system and user icon theme directories once at startup and return the
+/// set of base icon names (without extension) that actually exist on disk.
+///
+/// This is used to avoid calling `widget::icon::from_name()` for icon names
+/// that are absent from the theme — COSMIC traverses every theme directory
+/// before giving up on a missing name, which is very slow when done for
+/// hundreds of Nix packages.
+fn scan_available_icon_names() -> HashSet<String> {
+    let mut names = HashSet::new();
+
+    // Build the list of directories to scan.
+    let mut hicolor_roots: Vec<PathBuf> = vec![
+        PathBuf::from("/usr/share/icons/hicolor"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        hicolor_roots.push(home.join(".nix-profile/share/icons/hicolor"));
+        hicolor_roots.push(home.join(".local/share/icons/hicolor"));
+    }
+
+    // For each hicolor root, walk every size subdirectory's apps/ folder.
+    for root in &hicolor_roots {
+        if let Ok(size_dirs) = std::fs::read_dir(root) {
+            for size_dir in size_dirs.flatten() {
+                collect_icon_stems_from_dir(&size_dir.path().join("apps"), &mut names);
+            }
+        }
+    }
+
+    // /usr/share/pixmaps — legacy flat directory
+    collect_icon_stems_from_dir(Path::new("/usr/share/pixmaps"), &mut names);
+
+    names
+}
+
+fn collect_icon_stems_from_dir(dir: &Path, names: &mut HashSet<String>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name();
+            let s = fname.to_string_lossy();
+            // Strip the last extension to get the icon stem (e.g. "gimp.png" → "gimp")
+            let stem = match s.rfind('.') {
+                Some(pos) => &s[..pos],
+                None => &s,
+            };
+            names.insert(stem.to_string());
+        }
+    }
+}
+
 fn build_nix_info(
     attr: &str,
     pname: &str,
@@ -224,6 +274,7 @@ fn build_nix_info(
     long_description: &str,
     homepage: &str,
     license: &str,
+    icon_name: &str,
 ) -> AppInfo {
     let urls = if !homepage.is_empty() {
         vec![AppUrl::Homepage(homepage.to_string())]
@@ -258,12 +309,7 @@ fn build_nix_info(
         categories: vec![],
         desktop_ids: vec![],
         flatpak_refs: vec![],
-        // Use pname as the XDG icon name — installed GUI apps register their
-        // icon under this name in the system theme. Falls through to the
-        // generic icon in resolve_icon() if not found.
-        icons: vec![AppIcon::Stock(
-            if !pname.is_empty() { pname.to_string() } else { attr.to_string() }
-        )],
+        icons: vec![AppIcon::Stock(icon_name.to_string())],
         provides: vec![],
         releases: vec![],
         screenshots: vec![],
@@ -291,6 +337,17 @@ impl Backend for CatalogBackend {
         {
             log::info!("catalog: loading nix_packages...");
             let t = std::time::Instant::now();
+
+            // Scan available icon names once so we never call from_name() for
+            // an icon that doesn't exist in the theme.  Missing-icon traversal
+            // in COSMIC is slow (~50 ms each) and would cause a multi-second
+            // stall when resolving icons for a page of Nix results.
+            let available_icons = scan_available_icon_names();
+            log::info!(
+                "catalog: found {} icon names in system theme dirs",
+                available_icons.len()
+            );
+
             let mut stmt = conn.prepare(
                 "SELECT attr, pname, version, description, long_description, homepage, license
                  FROM nix_packages",
@@ -309,8 +366,19 @@ impl Backend for CatalogBackend {
             let mut nix_count = 0usize;
             for row in rows.filter_map(|r| r.ok()) {
                 let (attr, pname, version, description, long_description, homepage, license) = row;
+                // Pick icon name only if it actually exists in the scanned theme.
+                // Fall back to "package-x-generic" so resolve_icon() short-circuits
+                // immediately without any theme traversal.
+                let icon_name = if !pname.is_empty() && available_icons.contains(&pname) {
+                    pname.clone()
+                } else if available_icons.contains(&attr) {
+                    attr.clone()
+                } else {
+                    "package-x-generic".to_string()
+                };
                 let info = build_nix_info(
-                    &attr, &pname, &version, &description, &long_description, &homepage, &license,
+                    &attr, &pname, &version, &description, &long_description, &homepage,
+                    &license, &icon_name,
                 );
                 let id = AppId::new(&attr);
                 self.infos.insert(id, Arc::new(info));
