@@ -100,6 +100,7 @@ addons = Addons
 source-installed = {$source} (installed)
 developer = Developer
 app-developers = {$app} Developers
+app-id = App ID
 monthly-downloads = Flathub monthly downloads
 version = Version {$version}
 licenses = Licenses

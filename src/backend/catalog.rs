@@ -420,7 +420,11 @@ fn build_nix_info(
         flatpak_refs: vec![],
         icons: vec![AppIcon::Stock(icon_name.to_string())],
         provides: vec![],
-        releases: vec![],
+        releases: if !version.is_empty() {
+            vec![AppRelease { timestamp: None, version: version.to_string(), description: None, url: None }]
+        } else {
+            vec![]
+        },
         screenshots: vec![],
         urls,
         monthly_downloads: 0,
@@ -637,7 +641,24 @@ impl Backend for CatalogBackend {
             for (fp_id, (_, nix_attr_opt)) in &app_map {
                 if let Some(nix_attr) = nix_attr_opt {
                     if let Some(nix_info) = self.infos.remove(&AppId::new(nix_attr)) {
-                        self.secondary_infos.push((AppId::new(fp_id), nix_info));
+                        // Enrich the Nix secondary entry with Flatpak metadata so the detail
+                        // view shows rich descriptions, screenshots, and the correct icon when
+                        // the user switches to the Nixpkgs source dropdown option.
+                        // The Nix source_id, source_name, pkgnames (for install routing), and
+                        // version are kept; everything else is copied from the richer Flatpak entry.
+                        let enriched = if let Some(fp_info) = self.infos.get(&AppId::new(fp_id)) {
+                            let mut n = (*nix_info).clone();
+                            n.description   = fp_info.description.clone();
+                            n.screenshots   = fp_info.screenshots.clone();
+                            n.releases      = fp_info.releases.clone();
+                            n.developer_name = fp_info.developer_name.clone();
+                            n.icons         = fp_info.icons.clone();
+                            n.urls          = fp_info.urls.clone();
+                            Arc::new(n)
+                        } else {
+                            nix_info
+                        };
+                        self.secondary_infos.push((AppId::new(fp_id), enriched));
                         removed += 1;
                     }
                 }

@@ -399,17 +399,41 @@ impl App {
                 }])
                 .align_x(Alignment::Center)
                 .width(Length::Fill);
-                let developers_widget = widget::column::with_children(vec![
-                    if selected.info.developer_name.is_empty() {
-                        widget::text::heading(fl!(
-                            "app-developers",
-                            app = selected.info.name.as_str()
-                        ))
-                        .into()
+                // If a homepage URL exists, make the developer name a clickable link.
+                let developer_homepage: Option<&str> = selected.info.urls.iter().find_map(|u| {
+                    if let AppUrl::Homepage(url) = u { Some(url.as_str()) } else { None }
+                });
+                let developer_name_element: Element<'_, Message> = {
+                    let name = if selected.info.developer_name.is_empty() {
+                        fl!("app-developers", app = selected.info.name.as_str())
                     } else {
-                        widget::text::heading(&selected.info.developer_name).into()
-                    },
+                        selected.info.developer_name.clone()
+                    };
+                    if let Some(url) = developer_homepage {
+                        widget::button::link(name)
+                            .on_press(Message::LaunchUrl(url.to_string()))
+                            .padding(0)
+                            .into()
+                    } else {
+                        widget::text::heading(name).into()
+                    }
+                };
+                let developers_widget = widget::column::with_children(vec![
+                    developer_name_element,
                     widget::text::body(fl!("developer")).into(),
+                ])
+                .align_x(Alignment::Center)
+                .width(Length::Fill);
+
+                // App ID: show Nix attr for Nix sources, Flatpak ID otherwise.
+                let display_id = if selected.info.source_id == "nixpkgs" {
+                    selected.info.pkgnames.first().map(|s| s.as_str()).unwrap_or_else(|| selected.id.raw())
+                } else {
+                    selected.id.raw()
+                };
+                let app_id_widget = widget::column::with_children(vec![
+                    widget::text::heading(display_id).into(),
+                    widget::text::body(fl!("app-id")).into(),
                 ])
                 .align_x(Alignment::Center)
                 .width(Length::Fill);
@@ -423,7 +447,7 @@ impl App {
                     .width(Length::Fill)
                 });
                 if grid_width < 416 {
-                    let size = 4 + if downloads_widget.is_some() { 3 } else { 0 };
+                    let size = 8 + if downloads_widget.is_some() { 3 } else { 0 };
                     let downloads_widget_space = downloads_widget
                         .is_some()
                         .then(widget::divider::horizontal::default);
@@ -434,12 +458,14 @@ impl App {
                             .push(widget::divider::horizontal::default())
                             .push(developers_widget)
                             .push(widget::divider::horizontal::default())
+                            .push(app_id_widget)
+                            .push(widget::divider::horizontal::default())
                             .push_maybe(downloads_widget)
                             .push_maybe(downloads_widget_space)
                             .spacing(space_xxs),
                     );
                 } else {
-                    let row_size = 4 + if downloads_widget.is_some() { 2 } else { 0 };
+                    let row_size = 6 + if downloads_widget.is_some() { 2 } else { 0 };
                     let downloads_widget_space = downloads_widget
                         .is_some()
                         .then(|| widget::divider::vertical::default().height(Length::Fixed(32.0)));
@@ -453,6 +479,11 @@ impl App {
                                         .height(Length::Fixed(32.0)),
                                 )
                                 .push(developers_widget)
+                                .push(
+                                    widget::divider::vertical::default()
+                                        .height(Length::Fixed(32.0)),
+                                )
+                                .push(app_id_widget)
                                 .push_maybe(downloads_widget_space)
                                 .push_maybe(downloads_widget)
                                 .align_y(Alignment::Center)
